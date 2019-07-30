@@ -119,6 +119,7 @@ CONTAINS
       LOGICAL                                            :: has_basis, uks
       REAL(KIND=dp)                                      :: al, ear, ok, rk, scal, zeff
       REAL(KIND=dp), DIMENSION(0:lmat, 10, 2)            :: edelta
+      INTEGER, DIMENSION(0:lmat, 10, 2, 2)               :: abdelta
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: zet
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: gcc
       TYPE(all_potential_type), POINTER                  :: all_potential
@@ -344,7 +345,8 @@ CONTAINS
                                       ncalc=ncalc, &
                                       ncore=ncore, &
                                       nelem=nelem, &
-                                      edelta=edelta)
+                                      edelta=edelta, &
+                                      abdelta=abdelta)
 
       ! restricted or unrestricted?
       IF (SUM(ABS(edelta)) > 0.0_dp) THEN

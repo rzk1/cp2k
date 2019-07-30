@@ -217,7 +217,7 @@ CONTAINS
                   ELSE IF (size_keys(dimen) == almo_mat_dim_virt) THEN
                      !block_sizes_new(:)=almo_scf_env%nvirt_of_atom(:,spin_key)
                   ENDIF
-                  ! molecular clustering of MOs
+               ! molecular clustering of MOs
                ELSE IF (almo_scf_env%mat_distr_mos == almo_mat_distr_molecular) THEN
                   nlength = nmols
                   ALLOCATE (block_sizes_new(nlength))
@@ -928,8 +928,8 @@ CONTAINS
       ALLOCATE (almo_scf_env%quench_t(almo_scf_env%nspins))
       ALLOCATE (almo_scf_env%domain_map(almo_scf_env%nspins))
 
-      !DO ispin=1,almo_scf_env%nspins
-      ispin = 1
+      DO ispin=1, almo_scf_env%nspins
+      !ispin = 1
 
       ! create the sparsity template for the occupied orbitals
       CALL matrix_almo_create(matrix_new=almo_scf_env%quench_t(ispin), &
@@ -1496,15 +1496,15 @@ CONTAINS
       ENDDO
       DEALLOCATE (domain_grid)
 
-      !ENDDO ! ispin
-      IF (almo_scf_env%nspins .EQ. 2) THEN
-         CALL dbcsr_copy(almo_scf_env%quench_t(2), &
-                         almo_scf_env%quench_t(1))
-         almo_scf_env%domain_map(2)%pairs(:, :) = &
-            almo_scf_env%domain_map(1)%pairs(:, :)
-         almo_scf_env%domain_map(2)%index1(:) = &
-            almo_scf_env%domain_map(1)%index1(:)
-      ENDIF
+      ENDDO ! ispin
+      !IF (almo_scf_env%nspins .EQ. 2) THEN
+      !   CALL dbcsr_copy(almo_scf_env%quench_t(2), &
+      !                   almo_scf_env%quench_t(1))
+      !   almo_scf_env%domain_map(2)%pairs(:, :) = &
+      !      almo_scf_env%domain_map(1)%pairs(:, :)
+      !   almo_scf_env%domain_map(2)%index1(:) = &
+      !      almo_scf_env%domain_map(1)%index1(:)
+      !ENDIF
 
       CALL dbcsr_release(matrix_s_sym)
 
