@@ -54,6 +54,7 @@ MODULE almo_scf_types
 
    END TYPE penalty_type
 
+
    ! almo-based electronic structure analysis
    TYPE almo_analysis_type
 
@@ -63,6 +64,7 @@ MODULE almo_scf_types
       INTEGER :: frozen_mo_energy_term
 
    END TYPE almo_analysis_type
+
 
    TYPE optimizer_options_type
 

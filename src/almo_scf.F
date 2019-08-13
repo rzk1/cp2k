@@ -20,6 +20,7 @@ MODULE almo_scf
                                               almo_scf_construct_nlmos,&
                                               almo_scf_xalmo_eigensolver,&
                                               almo_scf_xalmo_pcg,&
+                                              almo_scf_construct_nlmos,&
                                               almo_scf_xalmo_trustr
    USE almo_scf_qs,                     ONLY: almo_dm_to_almo_ks,&
                                               almo_scf_construct_quencher,&
@@ -61,7 +62,9 @@ MODULE almo_scf
         dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
         dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, dbcsr_nblkcols_total, &
         dbcsr_nblkrows_total, dbcsr_p_type, dbcsr_release, dbcsr_reserve_block2d, dbcsr_scale, &
-        dbcsr_set, dbcsr_type, dbcsr_type_no_symmetry, dbcsr_type_symmetric, dbcsr_work_create
+        dbcsr_set, dbcsr_type, dbcsr_type_no_symmetry, dbcsr_type_symmetric, dbcsr_work_create, &
+        dbcsr_init_random, dbcsr_add, dbcsr_iterator_type, dbcsr_iterator_next_block, &
+        dbcsr_iterator_blocks_left, dbcsr_iterator_start, dbcsr_iterator_stop
    USE domain_submatrix_methods,        ONLY: init_submatrices,&
                                               release_submatrices
    USE input_constants,                 ONLY: &
@@ -74,7 +77,8 @@ MODULE almo_scf
         xalmo_case_block_diag, xalmo_case_fully_deloc, xalmo_case_normal, xalmo_trial_r0_out
    USE input_section_types,             ONLY: section_vals_type
    USE iterate_matrix,                  ONLY: invert_Hotelling,&
-                                              matrix_sqrt_Newton_Schulz
+                                              matrix_sqrt_Newton_Schulz, &
+                                              determinant
    USE kinds,                           ONLY: default_path_length,&
                                               dp
    USE mathlib,                         ONLY: binomial
@@ -96,6 +100,9 @@ MODULE almo_scf
    USE qs_scf_post_scf,                 ONLY: qs_scf_compute_properties
    USE qs_scf_types,                    ONLY: qs_scf_env_type,&
                                               scf_env_release
+   USE cp_dbcsr_diag,                   ONLY: cp_dbcsr_syevd
+   USE message_passing,                 ONLY: mp_sum
+
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -1910,7 +1917,6 @@ CONTAINS
          CALL dbcsr_release(tempVOcc2)
          CALL dbcsr_release(tempVV1)
          CALL dbcsr_release(tempVV2)
-
       ENDDO
 
    END SUBROUTINE construct_virtuals
@@ -1996,7 +2002,6 @@ CONTAINS
       eps_local = MAX(eps_start, 10E-14_dp)
 
       DO
-
          IF (eps_local > 0.11_dp) EXIT
 
          DO ispin = 1, nspins
@@ -2123,7 +2128,8 @@ CONTAINS
       INTEGER                                            :: handle, ispin
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_w
-      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: matrix_t_processed
+      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: matrix_t_processed, &
+                                                            matrix_v_processed
       TYPE(mo_set_p_type), DIMENSION(:), POINTER         :: mos
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
 

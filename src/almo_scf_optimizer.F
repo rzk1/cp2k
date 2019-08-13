@@ -85,9 +85,9 @@ MODULE almo_scf_optimizer
         xalmo_prec_full, xalmo_prec_zero
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
-   USE iterate_matrix,                  ONLY: determinant,&
-                                              invert_Hotelling,&
-                                              matrix_sqrt_Newton_Schulz
+   USE iterate_matrix,                  ONLY: invert_Hotelling,&
+                                              matrix_sqrt_Newton_Schulz, &
+                                              determinant
    USE kinds,                           ONLY: dp
    USE machine,                         ONLY: m_flush,&
                                               m_walltime
@@ -100,6 +100,8 @@ MODULE almo_scf_optimizer
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_loc_utils,                    ONLY: compute_berry_operator
    USE qs_localization_methods,         ONLY: initialize_weights
+   USE cp_dbcsr_operations,             ONLY: dbcsr_allocate_matrix_set,&
+                                              dbcsr_deallocate_matrix_set
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -902,7 +904,7 @@ CONTAINS
          m_theta, prec_vv, prev_grad, prev_minus_prec_grad, prev_step, siginvTFTsiginv, ST, step, &
          STsiginv_0, tempNOcc, tempNOcc_1, tempOccOcc
       TYPE(domain_submatrix_type), ALLOCATABLE, &
-         DIMENSION(:, :)                                 :: bad_modes_projector_down, domain_r_down
+         DIMENSION(:,:)                                  :: bad_modes_projector_down, domain_r_down
 
       CALL timeset(routineN, handle)
 
@@ -1023,19 +1025,21 @@ CONTAINS
 
          CALL initialize_weights(cell, weights)
 
-         ALLOCATE (op_sm_set_qs(2, dim_op))
-         ALLOCATE (op_sm_set_almo(2, dim_op))
+         NULLIFY (op_sm_set_qs)
+         CALL dbcsr_allocate_matrix_set(op_sm_set_qs, 2, dim_op)
+         NULLIFY (op_sm_set_almo)
+         CALL dbcsr_allocate_matrix_set(op_sm_set_almo, 2, dim_op)
 
          DO idim0 = 1, dim_op
             DO reim = 1, SIZE(op_sm_set_qs, 1)
-               NULLIFY (op_sm_set_qs(reim, idim0)%matrix)
                ALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
+               ALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
+               CALL dbcsr_create(op_sm_set_qs(reim, idim0)%matrix, template=qs_matrix_s(1)%matrix)
                CALL dbcsr_copy(op_sm_set_qs(reim, idim0)%matrix, qs_matrix_s(1)%matrix, &
                              name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_qs(reim, idim0)%matrix, 0.0_dp)
-               NULLIFY (op_sm_set_almo(reim, idim0)%matrix)
-               ALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
-               CALL dbcsr_copy(op_sm_set_almo(reim, idim0)%matrix, almo_scf_env%matrix_s(1), &
+               CALL dbcsr_create(op_sm_set_almo(reim, idim0)%matrix, template=matrix_s)
+               CALL dbcsr_copy(op_sm_set_almo(reim, idim0)%matrix, matrix_s, &
                              name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_almo(reim, idim0)%matrix, 0.0_dp)
             ENDDO
@@ -1408,16 +1412,16 @@ CONTAINS
                      m_ST=ST(ispin), &
                      m_STsiginv0=STsiginv_0(ispin), &
                      m_theta=m_theta(ispin), &
-                     m_sig_sqrti_ii=m_sig_sqrti_ii(ispin), &
-                     domain_s_inv=almo_scf_env%domain_s_inv(:, ispin), &
-                     domain_r_down=domain_r_down(:, ispin), &
+                     m_sig_sqrti_ii=m_sig_sqrti_ii(ispin),&
+                     domain_s_inv=almo_scf_env%domain_s_inv(:,ispin), &
+                     domain_r_down=domain_r_down(:,ispin), &
                      cpu_of_domain=almo_scf_env%cpu_of_domain, &
                      domain_map=almo_scf_env%domain_map(ispin), &
                      assume_t0_q0x=assume_t0_q0x, &
                      optimize_theta=optimize_theta, &
-                     normalize_orbitals=normalize_orbitals, &
-                     penalty_occ_vol=penalty_occ_vol, &
-                     penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin), &
+                     normalize_orbitals=normalize_orbitals,&
+                     penalty_occ_vol=penalty_occ_vol,&
+                     penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin),&
                      envelope_amplitude=almo_scf_env%envelope_amplitude, &
                      eps_filter=almo_scf_env%eps_filter, &
                      spin_factor=spin_factor, &
@@ -1840,7 +1844,7 @@ CONTAINS
                      e0 = e1
                      g0 = g1
                   ENDIF
-                  next_step_size_guess = next_step_size_guess + step_size
+                  next_step_size_guess = next_step_size_guess+step_size
                ENDIF
 
                ! update theta
@@ -1862,32 +1866,32 @@ CONTAINS
                WRITE (unit_nr, '(T2,A13,I6,F23.10,E14.5,F14.9,F9.2)') &
                   iter_type, iteration, &
                   energy_new, energy_diff, grad_norm, &
-                  t2 - t1
-               IF (penalty_occ_local .OR. penalty_occ_vol) THEN
-                  WRITE (unit_nr, '(T2,A25,F23.10)') &
-                     "Energy component:", (energy_new - penalty_func_new - localization_obj_function)
-               ENDIF
+                  t2-t1
                IF (penalty_occ_local) THEN
-                  WRITE (unit_nr, '(T2,A25,F23.10)') &
-                     "Localization component:", localization_obj_function
+                  WRITE(unit_nr,'(T2,A25,F23.10)') &
+                          "Energy component Loc:", (energy_new-penalty_func_new-localization_obj_function)
+                  WRITE(unit_nr,'(T2,A25,F23.10)') &
+                          "Localization component:", localization_obj_function
                ENDIF
                IF (penalty_occ_vol) THEN
-                  WRITE (unit_nr, '(T2,A25,F23.10)') &
-                     "Penalty component:", penalty_func_new
+                  WRITE(unit_nr,'(T2,A25,F23.10)') &
+                          "Energy component:", energy_new-penalty_func_new-localization_obj_function
+                  WRITE(unit_nr,'(T2,A25,F23.10)') &
+                          "Penalty component:", penalty_func_new
                ENDIF
             ENDIF
 
-            IF (my_special_case .EQ. xalmo_case_block_diag) THEN
+            IF (my_special_case.eq.xalmo_case_block_diag) THEN
                IF (penalty_occ_vol) THEN
-                  almo_scf_env%almo_scf_energy = energy_new - penalty_func_new - localization_obj_function
+                  almo_scf_env%almo_scf_energy=energy_new-penalty_func_new-localization_obj_function
                ELSE
-                  almo_scf_env%almo_scf_energy = energy_new - localization_obj_function
+                  almo_scf_env%almo_scf_energy=energy_new-localization_obj_function
                ENDIF
             ENDIF
 
             t1 = m_walltime()
 
-            iteration = iteration + 1
+            iteration = iteration+1
             IF (prepare_to_exit) EXIT
 
          ENDDO ! inner SCF loop
@@ -1896,15 +1900,15 @@ CONTAINS
             outer_prepare_to_exit = .TRUE.
          ENDIF
 
-         outer_iteration = outer_iteration + 1
+         outer_iteration = outer_iteration+1
          IF (outer_prepare_to_exit) EXIT
 
       ENDDO ! outer SCF loop
 
       DO ispin = 1, nspins
-         IF (converged .AND. almo_mathematica) THEN
-            IF (ispin .GT. 1) CPWARN("Mathematica files will be overwritten")
-            CALL print_mathematica_matrix(matrix_t_out(ispin), "matrixTf.dat")
+         IF (converged.AND.almo_mathematica) THEN
+            IF (ispin.GT.1) CPWARN("Mathematica files will be overwritten")
+            CALL print_mathematica_matrix(matrix_t_out(ispin),"matrixTf.dat")
          ENDIF
       ENDDO ! ispin
 
@@ -1935,8 +1939,8 @@ CONTAINS
          CALL dbcsr_release(m_theta(ispin))
          CALL dbcsr_release(m_t_in_local(ispin))
          CALL dbcsr_release(m_sig_sqrti_ii(ispin))
-         CALL release_submatrices(domain_r_down(:, ispin))
-         CALL release_submatrices(bad_modes_projector_down(:, ispin))
+         CALL release_submatrices(domain_r_down(:,ispin))
+         CALL release_submatrices(bad_modes_projector_down(:,ispin))
          CALL dbcsr_release(tempNOcc(ispin))
          CALL dbcsr_release(tempNOcc_1(ispin))
          CALL dbcsr_release(tempOccOcc(ispin))
@@ -1967,15 +1971,15 @@ CONTAINS
 
       DEALLOCATE (m_theta, m_t_in_local)
       IF (penalty_occ_local) THEN
-         DO idim0 = 1, dim_op
-            DO reim = 1, SIZE(op_sm_set_qs, 1)
-               DEALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
-               DEALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
+         DO i = 1, dim_op
+            DO j = 1, SIZE(op_sm_set_qs, 1)
+               DEALLOCATE (op_sm_set_qs(j, i)%matrix)
+               DEALLOCATE (op_sm_set_almo(j, i)%matrix)
             ENDDO
          END DO
          DEALLOCATE (op_sm_set_qs)
          DEALLOCATE (op_sm_set_almo)
-         DEALLOCATE (weights)
+         DEALLOCATE(weights)
       ENDIF
 
       IF (.NOT. converged .AND. .NOT. optimizer%early_stopping_on) THEN
@@ -2116,18 +2120,21 @@ CONTAINS
          ALLOCATE (weights(6))
          weights = 0.0_dp
          CALL initialize_weights(cell, weights)
-         ALLOCATE (op_sm_set_qs(2, dim_op))
-         ALLOCATE (op_sm_set_almo(2, dim_op))
+         NULLIFY (op_sm_set_qs)
+         CALL dbcsr_allocate_matrix_set(op_sm_set_qs, 2, dim_op)
+         NULLIFY (op_sm_set_almo)
+         CALL dbcsr_allocate_matrix_set(op_sm_set_almo, 2, dim_op)
          ! allocate space for T0^t.B.T0
          ALLOCATE (m_B0(2, dim_op, nspins))
          DO idim0 = 1, dim_op
             DO reim = 1, SIZE(op_sm_set_qs, 1)
-               NULLIFY (op_sm_set_qs(reim, idim0)%matrix, op_sm_set_almo(reim, idim0)%matrix)
                ALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
                ALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
+               CALL dbcsr_create(op_sm_set_qs(reim, idim0)%matrix, template=qs_matrix_s(1)%matrix)
                CALL dbcsr_copy(op_sm_set_qs(reim, idim0)%matrix, qs_matrix_s(1)%matrix, &
                              name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_qs(reim, idim0)%matrix, 0.0_dp)
+               CALL dbcsr_create(op_sm_set_almo(reim, idim0)%matrix, template=matrix_s)
                CALL dbcsr_copy(op_sm_set_almo(reim, idim0)%matrix, matrix_s, &
                              name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_almo(reim, idim0)%matrix, 0.0_dp)
@@ -2374,13 +2381,8 @@ CONTAINS
       ENDDO ! ispin
 
       IF (optimizer%opt_penalty%operator_type .EQ. op_loc_berry) THEN
-         DO idim0 = 1, SIZE(op_sm_set_qs, 2) ! this loop is over miller ind
-            DO reim = 1, SIZE(op_sm_set_qs, 1) ! this loop is over Re/Im
-               DEALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
-               DEALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
-            ENDDO
-         ENDDO
-         DEALLOCATE (op_sm_set_qs, op_sm_set_almo)
+         CALL dbcsr_deallocate_matrix_set(op_sm_set_qs)
+         CALL dbcsr_deallocate_matrix_set(op_sm_set_almo)
       ENDIF
 
       ! start the outer SCF loop
@@ -3004,9 +3006,9 @@ CONTAINS
 !>       2017.07 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
-   SUBROUTINE xalmo_analysis(detailed_analysis, eps_filter, m_T_in, m_T0_in, &
-                             m_siginv_in, m_siginv0_in, m_S_in, m_KS0_in, m_quench_t_in, energy_out, &
-                             m_eda_out, m_cta_out)
+   SUBROUTINE xalmo_analysis(detailed_analysis, eps_filter,  m_T_in, m_T0_in, &
+      m_siginv_in, m_siginv0_in, m_S_in, m_KS0_in, m_quench_t_in, energy_out, &
+      m_eda_out, m_cta_out) 
 
       LOGICAL, INTENT(IN)                                :: detailed_analysis
       REAL(KIND=dp), INTENT(IN)                          :: eps_filter
@@ -3019,7 +3021,7 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'xalmo_analysis', routineP = moduleN//':'//routineN
 
       INTEGER                                            :: handle, ispin, nspins
-      REAL(KIND=dp)                                      :: energy_ispin, spin_factor
+      REAL(KIND=dp)                                      :: energy_ispin,  spin_factor
       TYPE(dbcsr_type)                                   :: FTsiginv0, Fvo0, m_X, siginvTFTsiginv0, &
                                                             ST0
 

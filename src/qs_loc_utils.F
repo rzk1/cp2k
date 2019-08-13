@@ -855,12 +855,12 @@ CONTAINS
 
          nrow = 0
          DO iset = 1, nseta
-
+ 
             ncoa = npgfa(iset)*ncoset(la_max(iset))
             sgfa = first_sgfa(1, iset)
 
             DO jset = 1, nsetb
-
+    
                ncob = npgfb(jset)*ncoset(lb_max(jset))
                sgfb = first_sgfb(1, jset)
 
