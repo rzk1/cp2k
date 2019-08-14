@@ -2213,22 +2213,32 @@ CONTAINS
    END SUBROUTINE almo_scf_xalmo_pcg
 
 ! **************************************************************************************************
-!> \brief Optimization of ALMOs using PCG-like minimizers
+!> \brief Optimization of NLMOs using PCG minimizers
 !> \param qs_env ...
-!> \param almo_scf_env ...
 !> \param optimizer   controls the optimization algorithm
-!> \param matrix_t_in - initial MOs
-!> \param matrix_t_out - final MOs
+!> \param matrix_s - AO overlap (NAOs x NAOs)
+!> \param matrix_mo_in - initial MOs (NAOs x NMOs)
+!> \param matrix_mo_out - final MOs (NAOs x NMOs)
+!> \param template_matrix_sigma - template (NMOs x NMOs)
+!> \param overlap_determinant - the determinant of the MOs overlap
+!> \param mat_distr_aos - info on the distribution of AOs
 !> \par History
 !>       2018.10 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
-   SUBROUTINE almo_scf_construct_nlmos(qs_env, almo_scf_env, optimizer, &
-                                 matrix_t_in, matrix_t_out)
+   SUBROUTINE almo_scf_construct_nlmos(qs_env, optimizer, &
+                                 matrix_s, matrix_mo_in, matrix_mo_out, &
+                                 template_matrix_sigma, overlap_determinant, &
+                                 mat_distr_aos, eps_filter)
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(almo_scf_env_type)                            :: almo_scf_env
       TYPE(optimizer_options_type)                       :: optimizer
-      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: matrix_t_in, matrix_t_out
+      TYPE(dbcsr_type)                                   :: matrix_s
+      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: matrix_mo_in, &
+                                                            matrix_mo_out, &
+                                                            template_matrix_sigma
+      REAL(KIND=dp), INTENT(INOUT)                       :: overlap_determinant
+      INTEGER, INTENT(IN)                                :: mat_distr_aos
+      REAL(KIND=dp), INTENT(IN)                          :: eps_filter
 
       CHARACTER(len=*), PARAMETER :: routineN = 'almo_scf_construct_nlmos', &
          routineP = moduleN//':'//routineN
@@ -2243,7 +2253,7 @@ CONTAINS
       TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: m_theta, &
                                                             prev_grad, prev_minus_prec_grad, &
                                                             prev_step, m_S0, step, m_sig_sqrti_ii, &
-                                                            m_t_in_local, approx_hessian, &
+                                                            m_t_mo_local, approx_hessian, &
                                                             m_sigma, m_theta_normalized, &
                                                             grad, m_siginv, &
                                                             tempNOcc1, tempOccOcc1, tempOccOcc2
@@ -2274,7 +2284,7 @@ CONTAINS
                                                             outer_iteration, iteration, &
                                                             cg_iteration, para_group, ielem, &
                                                             linear_search_type, natom, iatom, &
-                                                            isgf, ncol, nmoloc, nao
+                                                            isgf, ncol
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
@@ -2288,7 +2298,7 @@ CONTAINS
          unit_nr = -1
       ENDIF
 
-      nspins = almo_scf_env%nspins
+      nspins = SIZE(matrix_mo_in)
 
       IF (unit_nr > 0) THEN
          WRITE (unit_nr, *)
@@ -2301,8 +2311,6 @@ CONTAINS
       ENDIF
 
       NULLIFY (particle_set)
-      ! get rows and cols of the input
-      CALL dbcsr_get_info(matrix_t_in(1), nfullrows_total=nao, nfullcols_total=nmoloc)
 
       CALL get_qs_env(qs_env=qs_env, &
                       matrix_s=qs_matrix_s, &
@@ -2324,7 +2332,7 @@ CONTAINS
       ALLOCATE(m_theta(nspins))
       DO ispin = 1, nspins
          CALL dbcsr_create(m_theta(ispin), &
-                           template=almo_scf_env%matrix_sigma_inv(ispin), &
+                           template=template_matrix_sigma(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          ! create initial guess for the main variable - identity matrix 
          CALL dbcsr_set(m_theta(ispin), 0.0_dp)
@@ -2358,7 +2366,7 @@ CONTAINS
                CALL dbcsr_copy(op_sm_set_qs(reim, idim0)%matrix, qs_matrix_s(1)%matrix, &
                   name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_qs(reim, idim0)%matrix, 0.0_dp)
-               CALL dbcsr_copy(op_sm_set_almo(reim, idim0)%matrix, almo_scf_env%matrix_s(1), &
+               CALL dbcsr_copy(op_sm_set_almo(reim, idim0)%matrix, matrix_s, &
                   name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_almo(reim, idim0)%matrix, 0.0_dp)
                DO ispin = 1, nspins
@@ -2413,16 +2421,16 @@ CONTAINS
       ALLOCATE(penalty_occ_vol_prefactor(nspins))
       ALLOCATE(suggested_vol_penalty(nspins))
 
-      ! create a local copy of matrix_t_in because
-      ! matrix_t_in and matrix_t_out can be the same matrix
-      ! we need to make sure data in matrix_t_in is intact
-      ! after we start writing to matrix_t_out
-      ALLOCATE(m_t_in_local(nspins))
+      ! create a local copy of matrix_mo_in because
+      ! matrix_mo_in and matrix_mo_out can be the same matrix
+      ! we need to make sure data in matrix_mo_in is intact
+      ! after we start writing to matrix_mo_out
+      ALLOCATE(m_t_mo_local(nspins))
       DO ispin = 1, nspins
-         CALL dbcsr_create(m_t_in_local(ispin), &
-                           template=matrix_t_in(ispin), &
+         CALL dbcsr_create(m_t_mo_local(ispin), &
+                           template=matrix_mo_in(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_copy(m_t_in_local(ispin), matrix_t_in(ispin))
+         CALL dbcsr_copy(m_t_mo_local(ispin), matrix_mo_in(ispin))
       ENDDO
 
       ALLOCATE(approx_hessian(nspins))
@@ -2444,7 +2452,7 @@ CONTAINS
 
          ! init temporary storage
          CALL dbcsr_create(tempNOcc1(ispin), &
-                           template=matrix_t_out(ispin), &
+                           template=matrix_mo_out(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(approx_hessian(ispin), &
                            template=m_theta(ispin), &
@@ -2489,22 +2497,22 @@ CONTAINS
          CALL dbcsr_set(step(ispin), 0.0_dp)
          CALL dbcsr_set(prev_step(ispin),0.0_dp)
 
-         CALL dbcsr_get_info(almo_scf_env%matrix_sigma_inv(ispin), &
+         CALL dbcsr_get_info(template_matrix_sigma(ispin), &
                  nfullrows_total = nocc(ispin) )
 
          penalty_occ_vol_prefactor(ispin) = -penalty_amplitude !KEEP: * spin_factor * nocc(ispin)
 
          ! compute m_S0=T0^t.S.T0
          CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                 almo_scf_env%matrix_s(1), &
-                 m_t_in_local(ispin), &
+                 matrix_s, &
+                 m_t_mo_local(ispin), &
                  0.0_dp, tempNOcc1(ispin), &
-                 filter_eps=almo_scf_env%eps_filter)
+                 filter_eps=eps_filter)
          CALL dbcsr_multiply("T", "N", 1.0_dp, &
-                 m_t_in_local(ispin), &
+                 m_t_mo_local(ispin), &
                  tempNOcc1(ispin), &
                  0.0_dp, m_S0(ispin), &
-                 filter_eps=almo_scf_env%eps_filter)
+                 filter_eps=eps_filter)
 
          SELECT CASE (optimizer%opt_penalty%operator_type)
 
@@ -2516,19 +2524,19 @@ CONTAINS
                DO reim = 1, SIZE(op_sm_set_qs, 1) ! this loop is over Re/Im 
 
                   CALL matrix_qs_to_almo(op_sm_set_qs(reim, idim0)%matrix, op_sm_set_almo(reim, idim0)%matrix, &
-                                         almo_scf_env%mat_distr_aos, .FALSE.)
+                                         mat_distr_aos, .FALSE.)
 
                   CALL dbcsr_multiply("N", "N", 1.0_dp, &
                           op_sm_set_almo(reim, idim0)%matrix, &
-                          m_t_in_local(ispin), &
+                          m_t_mo_local(ispin), &
                           0.0_dp, tempNOcc1(ispin), &
-                          filter_eps=almo_scf_env%eps_filter)
+                          filter_eps=eps_filter)
 
                   CALL dbcsr_multiply("T", "N", 1.0_dp, &
-                          m_t_in_local(ispin), &
+                          m_t_mo_local(ispin), &
                           tempNOcc1(ispin), &
                           0.0_dp, m_B0(reim,idim0,ispin), &
-                          filter_eps=almo_scf_env%eps_filter)
+                          filter_eps=eps_filter)
 
                   DEALLOCATE(op_sm_set_qs(reim, idim0)%matrix)
                   DEALLOCATE(op_sm_set_almo(reim, idim0)%matrix)
@@ -2546,30 +2554,30 @@ CONTAINS
                ncol = nsgf(iatom)
 
                CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                       almo_scf_env%matrix_s(1), &
-                       m_t_in_local(ispin), &
+                       matrix_s, &
+                       m_t_mo_local(ispin), &
                        0.0_dp, tempNOcc1(ispin), &
-                       filter_eps=almo_scf_env%eps_filter)
+                       filter_eps=eps_filter)
 
                CALL dbcsr_multiply("T", "N", 0.5_dp, &
-                       m_t_in_local(ispin), &
+                       m_t_mo_local(ispin), &
                        tempNOcc1(ispin), &
                        0.0_dp, m_B0(1,iatom,ispin), &
                        first_k=isgf, last_k=isgf+ncol-1, &
-                       filter_eps=almo_scf_env%eps_filter)
+                       filter_eps=eps_filter)
 
                CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                       almo_scf_env%matrix_s(1), &
-                       m_t_in_local(ispin), &
+                       matrix_s, &
+                       m_t_mo_local(ispin), &
                        0.0_dp, tempNOcc1(ispin), &
                        first_k=isgf, last_k=isgf+ncol-1, &
-                       filter_eps=almo_scf_env%eps_filter)
+                       filter_eps=eps_filter)
 
                CALL dbcsr_multiply("T", "N", 0.5_dp, &
-                       m_t_in_local(ispin), &
+                       m_t_mo_local(ispin), &
                        tempNOcc1(ispin), &
                        1.0_dp, m_B0(1,iatom,ispin), &
-                       filter_eps=almo_scf_env%eps_filter)
+                       filter_eps=eps_filter)
 
             ENDDO ! end loop over iatom
 
@@ -2577,10 +2585,8 @@ CONTAINS
 
       ENDDO ! ispin
 
-      !CALL dbcsr_print(almo_scf_env%matrix_s(1))
-      !
       !DO ispin = 1, nspins
-      !   CALL dbcsr_print(m_t_in_local(ispin))
+      !   CALL dbcsr_print(m_t_mo_local(ispin))
       !END DO
       !
       !DO ispin = 1, nspins
@@ -2628,7 +2634,7 @@ CONTAINS
                CALL dbcsr_multiply("N", "N", 1.0_dp, &
                           m_S0(ispin), m_theta(ispin), 0.0_dp, &
                           tempOccOcc1(ispin), &
-                          filter_eps=almo_scf_env%eps_filter)
+                          filter_eps=eps_filter)
                CALL dbcsr_set(m_sig_sqrti_ii(ispin), 0.0_dp)
                CALL dbcsr_add_on_diag(m_sig_sqrti_ii(ispin), 1.0_dp)
                CALL dbcsr_multiply("T", "N", 1.0_dp, &
@@ -2648,14 +2654,14 @@ CONTAINS
                        m_theta(ispin), &
                        m_sig_sqrti_ii(ispin), &
                        0.0_dp, m_theta_normalized(ispin), &
-                       filter_eps=almo_scf_env%eps_filter)
+                       filter_eps=eps_filter)
 
                ! compute new orbitals
                CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                       m_t_in_local(ispin), &
+                       m_t_mo_local(ispin), &
                        m_theta_normalized(ispin), &
-                       0.0_dp, matrix_t_out(ispin), &
-                       filter_eps=almo_scf_env%eps_filter)
+                       0.0_dp, matrix_mo_out(ispin), &
+                       filter_eps=eps_filter)
 
             ENDDO
 
@@ -2682,7 +2688,7 @@ CONTAINS
                                 m_B0(reim, idim0, ispin), &
                                 m_theta_normalized(ispin), &
                                 0.0_dp, tempOccOcc1(ispin), &
-                                filter_eps=almo_scf_env%eps_filter)
+                                filter_eps=eps_filter)
                         CALL dbcsr_set(tempOccOcc2(ispin), 0.0_dp)
                         CALL dbcsr_add_on_diag(tempOccOcc2(ispin), 1.0_dp)
                         CALL dbcsr_multiply("T", "N", 1.0_dp, &
@@ -2726,18 +2732,18 @@ CONTAINS
                           m_S0(ispin), &
                           m_theta_normalized(ispin), &
                           0.0_dp, tempOccOcc1(ispin), &
-                          filter_eps=almo_scf_env%eps_filter)
+                          filter_eps=eps_filter)
                   ! compute current sigma
                   CALL dbcsr_multiply("T", "N", 1.0_dp, &
                           m_theta_normalized(ispin), &
                           tempOccOcc1(ispin), &
                           0.0_dp, m_sigma(ispin), &
-                          filter_eps=almo_scf_env%eps_filter)
+                          filter_eps=eps_filter)
 
                   CALL determinant(m_sigma(ispin), det1, &
-                          almo_scf_env%eps_filter)
+                          eps_filter)
                   ! save the current determinant
-                  almo_scf_env%overlap_determinant = det1 
+                  overlap_determinant = det1
 
                   IF (just_started .AND. penalty_amplitude .lt. 0.0_dp ) THEN 
                      penalty_occ_vol_prefactor(ispin) = - (-penalty_amplitude)*localization_obj_function_ispin
@@ -2766,8 +2772,8 @@ CONTAINS
                   CALL invert_Hotelling( & 
                             matrix_inverse=m_siginv(ispin), & 
                             matrix=m_sigma(ispin), & 
-                            threshold=almo_scf_env%eps_filter*10.0_dp, &
-                            filter_eps=almo_scf_env%eps_filter, &
+                            threshold=eps_filter*10.0_dp, &
+                            filter_eps=eps_filter, &
                             silent=.FALSE.)
                ENDIF
 
@@ -2783,7 +2789,7 @@ CONTAINS
                   do_penalty_local=penalty_local, &
                   local_coeff = localiz_coeff, &
                   occ_vol_prefactor=penalty_occ_vol_prefactor(ispin), &
-                  eps_filter=almo_scf_env%eps_filter, &
+                  eps_filter=eps_filter, &
                   suggested_vol_penalty=suggested_vol_penalty(ispin))
 
             ENDDO ! ispin
@@ -2896,8 +2902,8 @@ CONTAINS
                            !CALL compute_preconditioner(&
                            !       m_prec_out=approx_hessian(ispin),&
                            !       m_ks=almo_scf_env%matrix_ks(ispin),&
-                           !       m_s=almo_scf_env%matrix_s(1),&
-                           !       m_siginv=almo_scf_env%matrix_sigma_inv(ispin),&
+                           !       m_s=matrix_s,&
+                           !       m_siginv=almo_scf_env%template_matrix_sigma(ispin),&
                            !       m_quench_t=quench_t(ispin),&
                            !       m_FTsiginv=FTsiginv(ispin),&
                            !       m_siginvTFTsiginv=siginvTFTsiginv(ispin),&
@@ -2912,7 +2918,7 @@ CONTAINS
                            !       assume_t0_q0x=assume_t0_q0x,&
                            !       penalty_occ_vol=penalty_occ_vol,&
                            !       penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin),&
-                           !       eps_filter=almo_scf_env%eps_filter,&
+                           !       eps_filter=eps_filter,&
                            !       neg_thr=0.5_dp,&
                            !       spin_factor=spin_factor,&
                            !       special_case=my_special_case)
@@ -2925,7 +2931,7 @@ CONTAINS
                                             approx_hessian(ispin), &
                                             grad(ispin), &
                                             0.0_dp, step(ispin), &
-                                            filter_eps=almo_scf_env%eps_filter)
+                                            filter_eps=eps_filter)
 
                      ENDDO ! ispin
 
@@ -3108,7 +3114,7 @@ CONTAINS
          IF (penalty_occ_vol) THEN
             WRITE(unit_nr,'()')
             WRITE(unit_nr,'(T2,A19,F23.10)') &
-                    "FINAL DETERMINANT:", almo_scf_env%overlap_determinant
+                    "FINAL DETERMINANT:", overlap_determinant
 
             WRITE(unit_nr,'()')
             WRITE(unit_nr,'(T2,A19,F23.10)') &
@@ -3124,7 +3130,7 @@ CONTAINS
             ENDDO
          ENDDO
          CALL dbcsr_release(m_theta(ispin))
-         CALL dbcsr_release(m_t_in_local(ispin))
+         CALL dbcsr_release(m_t_mo_local(ispin))
          CALL dbcsr_release(tempNOcc1(ispin))
          CALL dbcsr_release(approx_hessian(ispin))
          CALL dbcsr_release(m_theta_normalized(ispin))
@@ -3161,7 +3167,7 @@ CONTAINS
       DEALLOCATE(tempOccOcc1)
       DEALLOCATE(tempOccOcc2)
 
-      DEALLOCATE(m_theta, m_t_in_local)
+      DEALLOCATE(m_theta, m_t_mo_local)
       DEALLOCATE(m_B0)
       DEALLOCATE(weights)
       DEALLOCATE (first_sgf, last_sgf, nsgf)
