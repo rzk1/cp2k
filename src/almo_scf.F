@@ -1697,58 +1697,6 @@ CONTAINS
          !KEEP:   pre_occ_vol = almo_scf_env%opt_nlmo_pcg%opt_penalty%occ_vol_coeff
          !KEEP:ENDDO
 
-         !RZK-WARNING: why are we creating no_quench matrix here?
-         ALLOCATE (no_quench(almo_scf_env%nspins))
-         CALL dbcsr_create(no_quench(1), &
-                           template=almo_scf_env%matrix_t(1), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_get_info(no_quench(1), distribution=dist)
-         CALL dbcsr_distribution_get(dist, mynode=mynode)
-         CALL dbcsr_work_create(no_quench(1), &
-                                work_mutable=.TRUE.)
-         nblkrows_tot = dbcsr_nblkrows_total(no_quench(1))
-         nblkcols_tot = dbcsr_nblkcols_total(no_quench(1))
-
-         ! RZK-warning: is it a quadratic-scaling routine?
-         ! As a matter of fact it is! But this block treats
-         ! fully delocalized MOs. So it is unavoidable.
-         ! C'est la vie
-         DO row = 1, nblkrows_tot
-            DO col = 1, nblkcols_tot
-               tr = .FALSE.
-               iblock_row = row
-               iblock_col = col
-               CALL dbcsr_get_stored_coordinates(no_quench(1), &
-                                                 iblock_row, iblock_col, hold)
-               IF (hold .EQ. mynode) THEN
-                  NULLIFY (p_new_block)
-                  CALL dbcsr_reserve_block2d(no_quench(1), &
-                                             iblock_row, iblock_col, p_new_block)
-                  CPASSERT(ASSOCIATED(p_new_block))
-                  p_new_block(:, :) = 1.0_dp
-               ENDIF
-            ENDDO
-         ENDDO
-         CALL dbcsr_finalize(no_quench(1))
-         IF (almo_scf_env%nspins .GT. 1) THEN
-            DO ispin = 2, almo_scf_env%nspins
-               CALL dbcsr_create(no_quench(ispin), &
-                                 template=almo_scf_env%matrix_t(1), &
-                                 matrix_type=dbcsr_type_no_symmetry)
-               CALL dbcsr_copy(no_quench(ispin), no_quench(1))
-            ENDDO
-         ENDIF
-
-         !ALLOCATE (no_quench(almo_scf_env%nspins))
-         !DO ispin = 1, almo_scf_env%nspins
-         !   CALL dbcsr_create(no_quench(ispin), &
-         !                     template=almo_scf_env%matrix_t(1), &
-         !                     matrix_type=dbcsr_type_no_symmetry)
-         !   CALL dbcsr_set(no_quench(ispin),1.0)
-         !ENDDO
-
-         DEALLOCATE(no_quench)
-
       ENDIF
 
    END SUBROUTINE construct_nlmos

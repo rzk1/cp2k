@@ -22,7 +22,7 @@ MODULE almo_scf_optimizer
         almo_scf_t_to_proj, apply_domain_operators, apply_projector, &
         construct_domain_preconditioner, construct_domain_r_down, construct_domain_s_inv, &
         construct_domain_s_sqrt, get_overlap, orthogonalize_mos, pseudo_invert_diagonal_blk, &
-        xalmo_initial_guess
+        xalmo_initial_guess, fill_matrix_with_ones
    USE almo_scf_qs,                     ONLY: almo_dm_to_almo_ks,&
                                               almo_dm_to_qs_env,&
                                               matrix_qs_to_almo,&
@@ -60,7 +60,7 @@ MODULE almo_scf_optimizer
         dbcsr_nblkcols_total, dbcsr_nblkrows_total, dbcsr_norm, dbcsr_norm_maxabsnorm, &
         dbcsr_p_type, dbcsr_print_block_sum, dbcsr_release, dbcsr_reserve_block2d, dbcsr_scale, &
         dbcsr_set, dbcsr_set_diag, dbcsr_triu, dbcsr_type, dbcsr_type_no_symmetry, &
-        dbcsr_work_create
+        dbcsr_work_create, dbcsr_print
    USE domain_submatrix_methods,        ONLY: add_submatrices,&
                                               construct_submatrices,&
                                               copy_submatrices,&
@@ -2253,10 +2253,11 @@ CONTAINS
       TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: m_theta, &
                                                             prev_grad, prev_minus_prec_grad, &
                                                             prev_step, m_S0, step, m_sig_sqrti_ii, &
-                                                            m_t_mo_local, approx_hessian, &
+                                                            m_t_mo_local, approx_inv_hessian, &
                                                             m_sigma, m_theta_normalized, &
-                                                            grad, m_siginv, &
-                                                            tempNOcc1, tempOccOcc1, tempOccOcc2
+                                                            grad, m_siginv, prev_m_theta, &
+                                                            tempNOcc1, tempOccOcc1, tempOccOcc2, &
+                                                            tempOccOcc3, bfgs_y, bfgs_s
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: z2, reim_diag, weights, grad_norm_spin, &
                                                             diagonal, penalty_occ_vol_prefactor, &
                                                             suggested_vol_penalty
@@ -2271,12 +2272,14 @@ CONTAINS
                                                             objf_diff, g0sign, g1sign, &
                                                             next_step_size_guess, &
                                                             line_search_error, &
+                                                            bfgs_sum, bfgs_rho, &
                                                             t1, fval, penalty_func_new, &
                                                             localization_obj_function_ispin
       LOGICAL                                            :: penalty_local, penalty_occ_vol, &
                                                             prepare_to_exit, outer_prepare_to_exit, &
                                                             converged, line_search, &
-                                                            reset_conjugator, just_started
+                                                            reset_conjugator, just_started, &
+                                                            d_bfgs
       INTEGER                                            :: unit_nr, handle, idim0, reim, nspins, &
                                                             ispin, dim_op, prec_type, &
                                                             line_search_iteration, max_iter, &
@@ -2410,6 +2413,13 @@ CONTAINS
       ! preconditioner control
       prec_type = optimizer%preconditioner
 
+      ! use diagonal BFGS if preconditioner is set
+      d_bfgs = .FALSE.
+      IF (prec_type .NE. xalmo_prec_zero) d_bfgs = .TRUE.
+      IF (d_bfgs .AND. (optimizer%conjugator .NE. cg_zero) ) THEN
+         CPABORT("Cannot use conjugators with BFGS")
+      ENDIF
+
       IF (nspins == 1) THEN
          spin_factor = 2.0_dp
       ELSE
@@ -2433,8 +2443,9 @@ CONTAINS
          CALL dbcsr_copy(m_t_mo_local(ispin), matrix_mo_in(ispin))
       ENDDO
 
-      ALLOCATE(approx_hessian(nspins))
+      ALLOCATE(approx_inv_hessian(nspins))
       ALLOCATE(m_theta_normalized(nspins))
+      ALLOCATE(prev_m_theta(nspins))
       ALLOCATE(m_S0(nspins))
       ALLOCATE(prev_grad(nspins))
       ALLOCATE(grad(nspins))
@@ -2447,6 +2458,9 @@ CONTAINS
       ALLOCATE(tempNOcc1(nspins))
       ALLOCATE(tempOccOcc1(nspins))
       ALLOCATE(tempOccOcc2(nspins))
+      ALLOCATE(tempOccOcc3(nspins))
+      ALLOCATE(bfgs_y(nspins))
+      ALLOCATE(bfgs_s(nspins))
 
       DO ispin = 1, nspins
 
@@ -2454,10 +2468,13 @@ CONTAINS
          CALL dbcsr_create(tempNOcc1(ispin), &
                            template=matrix_mo_out(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(approx_hessian(ispin), &
+         CALL dbcsr_create(approx_inv_hessian(ispin), &
                            template=m_theta(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(m_theta_normalized(ispin), &
+                           template=m_theta(ispin), &
+                           matrix_type=dbcsr_type_no_symmetry)
+         CALL dbcsr_create(prev_m_theta(ispin), &
                            template=m_theta(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(m_S0(ispin), &
@@ -2491,6 +2508,15 @@ CONTAINS
                            template=m_theta(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(tempOccOcc2(ispin), &
+                           template=m_theta(ispin), &
+                           matrix_type=dbcsr_type_no_symmetry)
+         CALL dbcsr_create(tempOccOcc3(ispin), &
+                           template=m_theta(ispin), &
+                           matrix_type=dbcsr_type_no_symmetry)
+         CALL dbcsr_create(bfgs_s(ispin), &
+                           template=m_theta(ispin), &
+                           matrix_type=dbcsr_type_no_symmetry)
+         CALL dbcsr_create(bfgs_y(ispin), &
                            template=m_theta(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
 
@@ -2828,22 +2854,22 @@ CONTAINS
                      line_search_error = 0.0_dp
                      denom = 0.0_dp
                      denom2 = 0.0_dp
-   
+
                      DO ispin = 1, nspins
-   
+
                         CALL dbcsr_dot(grad(ispin), step(ispin), tempreal)
                         line_search_error = line_search_error + tempreal
                         CALL dbcsr_dot(grad(ispin), grad(ispin), tempreal)
                         denom = denom + tempreal
                         CALL dbcsr_dot(step(ispin), step(ispin), tempreal)
                         denom2 = denom2 + tempreal
-    
+
                      ENDDO ! ispin
-   
+
                      ! cosine of the angle between the step and grad
                      ! (must be close to zero at convergence)
                      line_search_error = line_search_error/SQRT(denom)/SQRT(denom2)
-   
+
                      IF (ABS(line_search_error) .GT. optimizer%lin_search_eps_error) THEN
                         line_search = .TRUE.
                         line_search_iteration = line_search_iteration+1
@@ -2877,8 +2903,9 @@ CONTAINS
                      CALL dbcsr_copy(prev_step(ispin), step(ispin))
                   ENDDO ! ispin
 
-                  ! compute the new step (apply preconditioner if available)
-                  IF (prec_type.EQ.xalmo_prec_zero) THEN
+                  ! compute the new step:
+                  ! if available use second derivative info - bfgs, hessian, preconditioner
+                  IF (prec_type .EQ. xalmo_prec_zero) THEN ! no second derivatives
 
                      ! no preconditioner
                      DO ispin = 1, nspins
@@ -2888,54 +2915,118 @@ CONTAINS
 
                      ENDDO ! ispin
 
-                  ELSE
+                  ELSE ! use second derivatives
 
-                     ! compute and invert preconditioner?
+                     ! compute and invert hessian/precond?
                      IF (iteration.eq.0) THEN
 
-                        ! computing preconditioner
-                        DO ispin = 1, nspins
-                           ! TODO: write preconditioner code later
-                           ! approx_hessian is set to I for now
-                           CALL dbcsr_set(approx_hessian(ispin), 0.0_dp)
-                           CALL dbcsr_add_on_diag(approx_hessian(ispin), 1.0_dp)
-                           !CALL compute_preconditioner(&
-                           !       m_prec_out=approx_hessian(ispin),&
-                           !       m_ks=almo_scf_env%matrix_ks(ispin),&
-                           !       m_s=matrix_s,&
-                           !       m_siginv=almo_scf_env%template_matrix_sigma(ispin),&
-                           !       m_quench_t=quench_t(ispin),&
-                           !       m_FTsiginv=FTsiginv(ispin),&
-                           !       m_siginvTFTsiginv=siginvTFTsiginv(ispin),&
-                           !       m_ST=ST(ispin),&
-                           !       para_env=almo_scf_env%para_env,&
-                           !       blacs_env=almo_scf_env%blacs_env,&
-                           !       nocc_of_domain=almo_scf_env%nocc_of_domain(:,ispin),&
-                           !       domain_s_inv=almo_scf_env%domain_s_inv(:,ispin),&
-                           !       domain_r_down=domain_r_down(:,ispin),&
-                           !       cpu_of_domain=almo_scf_env%cpu_of_domain,&
-                           !       domain_map=almo_scf_env%domain_map(ispin),&
-                           !       assume_t0_q0x=assume_t0_q0x,&
-                           !       penalty_occ_vol=penalty_occ_vol,&
-                           !       penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin),&
-                           !       eps_filter=eps_filter,&
-                           !       neg_thr=0.5_dp,&
-                           !       spin_factor=spin_factor,&
-                           !       special_case=my_special_case)
-                        ENDDO ! ispin
-                     ENDIF ! compute_prec
+                        IF (d_bfgs) THEN
+
+                           ! create matrix filled with 1.0 here
+                           CALL fill_matrix_with_ones(approx_inv_hessian(1))
+                           IF (nspins .GT. 1) THEN
+                              DO ispin = 2, nspins
+                                 CALL dbcsr_copy(approx_inv_hessian(ispin), approx_inv_hessian(1))
+                              ENDDO
+                           ENDIF
+
+                        ELSE
+
+                           ! computing preconditioner
+                           DO ispin = 1, nspins
+
+                              ! TODO: write preconditioner code later
+                              ! For now, create matrix filled with 1.0 here
+                              CALL fill_matrix_with_ones(approx_inv_hessian(ispin))
+                              !CALL compute_preconditioner(&
+                              !       m_prec_out=approx_hessian(ispin),&
+                              !       m_ks=almo_scf_env%matrix_ks(ispin),&
+                              !       m_s=matrix_s,&
+                              !       m_siginv=almo_scf_env%template_matrix_sigma(ispin),&
+                              !       m_quench_t=quench_t(ispin),&
+                              !       m_FTsiginv=FTsiginv(ispin),&
+                              !       m_siginvTFTsiginv=siginvTFTsiginv(ispin),&
+                              !       m_ST=ST(ispin),&
+                              !       para_env=almo_scf_env%para_env,&
+                              !       blacs_env=almo_scf_env%blacs_env,&
+                              !       nocc_of_domain=almo_scf_env%nocc_of_domain(:,ispin),&
+                              !       domain_s_inv=almo_scf_env%domain_s_inv(:,ispin),&
+                              !       domain_r_down=domain_r_down(:,ispin),&
+                              !       cpu_of_domain=almo_scf_env%cpu_of_domain,&
+                              !       domain_map=almo_scf_env%domain_map(ispin),&
+                              !       assume_t0_q0x=assume_t0_q0x,&
+                              !       penalty_occ_vol=penalty_occ_vol,&
+                              !       penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin),&
+                              !       eps_filter=eps_filter,&
+                              !       neg_thr=0.5_dp,&
+                              !       spin_factor=spin_factor,&
+                              !       special_case=my_special_case)
+                              !CALL invert hessian
+                           ENDDO ! ispin
+
+                        ENDIF
+
+                     ELSE ! not iteration zero
+
+                        ! update approx inverse hessian
+                        IF (d_bfgs) THEN ! diagonal BFGS
+
+                           IF (unit_nr>0) THEN
+                              WRITE(unit_nr,*) "....updating BFGS diagonal...."
+                           ENDIF
+
+                           DO ispin = 1, nspins
+
+                              ! compute s and y
+                              CALL dbcsr_copy(bfgs_y(ispin), grad(ispin))
+                              CALL dbcsr_add(bfgs_y(ispin), prev_grad(ispin), 1.0_dp, -1.0_dp)
+                              CALL dbcsr_copy(bfgs_s(ispin), m_theta(ispin))
+                              CALL dbcsr_add(bfgs_s(ispin), prev_m_theta(ispin), 1.0_dp, -1.0_dp)
+
+                              ! compute rho
+                              CALL dbcsr_dot(grad(ispin), step(ispin), bfgs_rho)
+                              bfgs_rho = 1.0_dp/bfgs_rho
+
+                              ! compute the sum of the squared elements of bfgs_y
+                              CALL dbcsr_dot(bfgs_y(ispin), bfgs_y(ispin), bfgs_sum)
+
+                              ! first term: start collecting new inv hessian in this temp matrix
+                              CALL dbcsr_copy(tempOccOcc2(ispin), approx_inv_hessian(ispin))
+
+                              ! second term: + rho * s * s
+                              CALL dbcsr_hadamard_product(bfgs_s(ispin), bfgs_s(ispin), tempOccOcc1(ispin))
+                              CALL dbcsr_add(tempOccOcc2(ispin), tempOccOcc1(ispin), 1.0_dp, bfgs_rho)
+
+                              ! third term: + rho^2 * s * s * H * sum_(y * y)
+                              CALL dbcsr_hadamard_product(tempOccOcc1(ispin), &
+                                      approx_inv_hessian(ispin), tempOccOcc3(ispin))
+                              CALL dbcsr_add(tempOccOcc2(ispin), tempOccOcc3(ispin), &
+                                      1.0_dp, bfgs_rho*bfgs_rho*bfgs_sum)
+
+                              ! fourth term: - 2 * rho * s * y * H
+                              CALL dbcsr_hadamard_product(bfgs_y(ispin), &
+                                      approx_inv_hessian(ispin), tempOccOcc1(ispin))
+                              CALL dbcsr_hadamard_product(bfgs_s(ispin), tempOccOcc1(ispin), tempOccOcc3(ispin))
+                              CALL dbcsr_add(tempOccOcc2(ispin), tempOccOcc3(ispin), &
+                                      1.0_dp, -2.0_dp*bfgs_rho)
+
+                              CALL dbcsr_copy(approx_inv_hessian(ispin), tempOccOcc2(ispin))
+
+                           ENDDO
+
+                        ENDIF
+
+                     ENDIF ! compute approximate inverse hessian
 
                      DO ispin = 1, nspins
 
-                        CALL dbcsr_multiply("N", "N", -1.0_dp, &
-                                            approx_hessian(ispin), &
-                                            grad(ispin), &
-                                            0.0_dp, step(ispin), &
-                                            filter_eps=eps_filter)
+                        CALL dbcsr_hadamard_product(approx_inv_hessian(ispin), &
+                                grad(ispin), step(ispin))
+                        CALL dbcsr_scale(step(ispin), -1.0_dp)
 
                      ENDDO ! ispin
 
-                  ENDIF ! preconditioner type fork
+                  ENDIF ! second derivative type fork
 
                   ! check whether we need to reset conjugate directions
                   IF (iteration .EQ. 0) THEN
@@ -2983,7 +3074,7 @@ CONTAINS
                IF (.NOT. line_search) THEN
                   ! we just changed the direction and
                   ! we have only E and grad from the current step
-                  ! it is not enouhg to compute step_size - just guess it
+                  ! it is not enough to compute step_size - just guess it
                   e0 = objf_new
                   g0 = 0.0_dp
                   DO ispin = 1, nspins
@@ -2991,7 +3082,7 @@ CONTAINS
                      g0 = g0 + tempreal
                   ENDDO ! ispin
                   g0sign = SIGN(1.0_dp, g0) ! sign of g0
-                  IF (linear_search_type .EQ. 1) THEN
+                  IF (linear_search_type .EQ. 1) THEN ! this is quadratic LS
                      IF (iteration .EQ. 0) THEN
                         step_size = optimizer%lin_search_step_size_guess
                      ELSE
@@ -3002,17 +3093,17 @@ CONTAINS
                            step_size = next_step_size_guess*1.05_dp
                         ENDIF
                      ENDIF
-                  ELSE IF (linear_search_type .EQ. 2) THEN
+                  ELSE IF (linear_search_type .EQ. 2) THEN ! this is cautious LS
                      ! this LS type is designed not to trust quadratic appr
                      ! so it always restarts from a safe step size
                      step_size = optimizer%lin_search_step_size_guess
                   ENDIF
                   IF (unit_nr > 0) THEN
-                     WRITE (unit_nr, '(A2,3F12.5)') &
-                        "DT", e0, g0, step_size
+                     WRITE (unit_nr, *) "Line search (current ls pos, objf, line grad, step to take)"
+                     WRITE (unit_nr, '(A8,4F15.5)') "LS-PRINT", 0.0_dp, e0, g0, step_size
                   ENDIF
                   next_step_size_guess = step_size
-               ELSE
+               ELSE ! this is not the first line search
                   e1 = objf_new
                   g1 = 0.0_dp
                   DO ispin = 1, nspins
@@ -3031,6 +3122,7 @@ CONTAINS
                      step_size = -g1/appr_sec_der
                   ELSE IF (linear_search_type .EQ. 2) THEN
                      ! alternative method for finding step size
+                     ! do not use quadratic approximation, only gradient signs
                      IF (g1sign .NE. g0sign ) THEN
                        step_size = -step_size/2.0;
                      ELSE
@@ -3038,6 +3130,10 @@ CONTAINS
                      ENDIF
                   ENDIF
                   ! end alternative LS types
+                  IF (unit_nr > 0) THEN
+                     WRITE (unit_nr, *) "Line search (current ls pos, objf, line grad, step to take)"
+                     WRITE (unit_nr, '(A8,4F15.5)') "LS-PRINT", next_step_size_guess, e1, g1, step_size
+                  ENDIF
                   e0 = e1
                   g0 = g1
                   g0sign = g1sign
@@ -3046,6 +3142,10 @@ CONTAINS
 
                ! update theta
                DO ispin = 1, nspins
+                  IF (.NOT. line_search) THEN ! we prepared to perform the first line search
+                     ! "previous" refers to the previous CG step, not the previous LS step
+                     CALL dbcsr_copy(prev_m_theta(ispin), m_theta(ispin))
+                  ENDIF
                   CALL dbcsr_add(m_theta(ispin), step(ispin), 1.0_dp, step_size)
                ENDDO ! ispin
 
@@ -3132,7 +3232,7 @@ CONTAINS
          CALL dbcsr_release(m_theta(ispin))
          CALL dbcsr_release(m_t_mo_local(ispin))
          CALL dbcsr_release(tempNOcc1(ispin))
-         CALL dbcsr_release(approx_hessian(ispin))
+         CALL dbcsr_release(approx_inv_hessian(ispin))
          CALL dbcsr_release(m_theta_normalized(ispin))
          CALL dbcsr_release(m_S0(ispin))
          CALL dbcsr_release(prev_grad(ispin))
@@ -3145,6 +3245,9 @@ CONTAINS
          CALL dbcsr_release(m_siginv(ispin))
          CALL dbcsr_release(tempOccOcc1(ispin))
          CALL dbcsr_release(tempOccOcc2(ispin))
+         CALL dbcsr_release(tempOccOcc3(ispin))
+         CALL dbcsr_release(bfgs_y(ispin))
+         CALL dbcsr_release(bfgs_s(ispin))
       ENDDO ! ispin
 
       DEALLOCATE(grad_norm_spin)
@@ -3152,7 +3255,7 @@ CONTAINS
       DEALLOCATE(penalty_occ_vol_prefactor)
       DEALLOCATE(suggested_vol_penalty)
 
-      DEALLOCATE(approx_hessian)
+      DEALLOCATE(approx_inv_hessian)
       DEALLOCATE(m_theta_normalized)
       DEALLOCATE(m_S0)
       DEALLOCATE(prev_grad)
@@ -3166,6 +3269,9 @@ CONTAINS
       DEALLOCATE(tempNOcc1)
       DEALLOCATE(tempOccOcc1)
       DEALLOCATE(tempOccOcc2)
+      DEALLOCATE(tempOccOcc3)
+      DEALLOCATE(bfgs_y)
+      DEALLOCATE(bfgs_s)
 
       DEALLOCATE(m_theta, m_t_mo_local)
       DEALLOCATE(m_B0)
