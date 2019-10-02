@@ -5,7 +5,7 @@
 
 ! **************************************************************************************************
 !> \brief Routines for all ALMO-based SCF methods
-!>        RZK-warning marks unresolved issues
+!>        'RZK-warning' marks unresolved issues
 !> \par History
 !>       2011.05 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
