@@ -11,6 +11,11 @@
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
 MODULE almo_scf_optimizer
+   USE almo_scf_lbfgs_types,            ONLY: lbfgs_history_type, &
+                                              lbfgs_seed, &
+                                              lbfgs_create, &
+                                              lbfgs_release, &
+                                              lbfgs_get_direction
    USE almo_scf_diis_types,             ONLY: almo_scf_diis_extrapolate,&
                                               almo_scf_diis_init,&
                                               almo_scf_diis_push,&
@@ -150,8 +155,6 @@ CONTAINS
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: matrix_mixing_old_blk
       TYPE(qs_energy_type), POINTER                      :: qs_energy
-
-!TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks
 
       CALL timeset(routineN, handle)
 
@@ -2279,7 +2282,7 @@ CONTAINS
                                                             prepare_to_exit, outer_prepare_to_exit, &
                                                             converged, line_search, &
                                                             reset_conjugator, just_started, &
-                                                            d_bfgs
+                                                            d_bfgs, l_bfgs
       INTEGER                                            :: unit_nr, handle, idim0, reim, nspins, &
                                                             ispin, dim_op, prec_type, &
                                                             line_search_iteration, max_iter, &
@@ -2290,6 +2293,7 @@ CONTAINS
                                                             isgf, ncol
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
+      TYPE(lbfgs_history_type)                           :: nlmo_lbfgs_history
 
       CALL timeset(routineN, handle)
 
@@ -2415,9 +2419,13 @@ CONTAINS
 
       ! use diagonal BFGS if preconditioner is set
       d_bfgs = .FALSE.
-      IF (prec_type .NE. xalmo_prec_zero) d_bfgs = .TRUE.
-      IF (d_bfgs .AND. (optimizer%conjugator .NE. cg_zero) ) THEN
+      l_bfgs = .FALSE.
+      IF (prec_type .NE. xalmo_prec_zero) l_bfgs = .TRUE.
+      IF (l_bfgs .AND. (optimizer%conjugator .NE. cg_zero) ) THEN
          CPABORT("Cannot use conjugators with BFGS")
+      ENDIF
+      IF (l_bfgs) THEN
+         CALL lbfgs_create(nlmo_lbfgs_history,nspins,nstore=10)
       ENDIF
 
       IF (nspins == 1) THEN
@@ -2708,7 +2716,7 @@ CONTAINS
 
                      z2(:) = 0.0_dp
 
-                     DO reim = 1, SIZE(m_B0, 1) ! this loop is over Re/Im 
+                     DO reim = 1, SIZE(m_B0, 1) ! this loop is over Re/Im
 
                         CALL dbcsr_multiply("N", "N", 1.0_dp, &
                                 m_B0(reim, idim0, ispin), &
@@ -2723,7 +2731,7 @@ CONTAINS
                                 0.0_dp, tempOccOcc2(ispin), &
                                 retain_sparsity=.TRUE.)
 
-                        reim_diag=0.0_dp 
+                        reim_diag=0.0_dp
                         CALL dbcsr_get_diag(tempOccOcc2(ispin),reim_diag)
                         CALL mp_sum(reim_diag, para_group)
                         z2(:) = z2(:) + reim_diag(:)*reim_diag(:)
@@ -2786,8 +2794,9 @@ CONTAINS
                ! save the previous gradient to compute beta
                ! do it only if the previous grad was computed
                ! for .NOT.line_search
-               IF (line_search_iteration .EQ. 0 .AND. iteration .NE. 0) &
+               IF (line_search_iteration .EQ. 0 .AND. iteration .NE. 0) THEN
                   CALL dbcsr_copy(prev_grad(ispin), grad(ispin))
+               ENDIF
 
             ENDDO ! ispin
 
@@ -2795,9 +2804,9 @@ CONTAINS
             DO ispin = 1, nspins
 
                IF (penalty_occ_vol) THEN
-                  CALL invert_Hotelling( & 
-                            matrix_inverse=m_siginv(ispin), & 
-                            matrix=m_sigma(ispin), & 
+                  CALL invert_Hotelling( &
+                            matrix_inverse=m_siginv(ispin), &
+                            matrix=m_sigma(ispin), &
                             threshold=eps_filter*10.0_dp, &
                             filter_eps=eps_filter, &
                             silent=.FALSE.)
@@ -2827,7 +2836,7 @@ CONTAINS
             ENDDO ! ispin
             grad_norm = MAXVAL(grad_norm_spin)
 
-            converged = (grad_norm .LE. optimizer%eps_error) 
+            converged = (grad_norm .LE. optimizer%eps_error)
             IF (converged .OR. (iteration .GE. max_iter)) THEN
                prepare_to_exit = .TRUE.
             ENDIF
@@ -2840,7 +2849,7 @@ CONTAINS
                ! do not do this in the first iteration
                IF (iteration .NE. 0) THEN
 
-                  ! enforce at least one line search 
+                  ! enforce at least one line search
                   ! without even checking the error
                   IF (.NOT. line_search) THEN
 
@@ -2892,9 +2901,9 @@ CONTAINS
                ! update the step direction
                IF (.NOT. line_search) THEN
 
-                  !IF (unit_nr>0) THEN
-                  !   WRITE(unit_nr,*) "....updating step direction...."
-                  !ENDIF
+                  IF (unit_nr>0) THEN
+                     WRITE(unit_nr,*) "....updating step direction...."
+                  ENDIF
 
                   cg_iteration = cg_iteration+1
 
@@ -2929,6 +2938,10 @@ CONTAINS
                                  CALL dbcsr_copy(approx_inv_hessian(ispin), approx_inv_hessian(1))
                               ENDDO
                            ENDIF
+
+                        ELSE IF (l_bfgs) THEN
+
+                           CALL lbfgs_seed(nlmo_lbfgs_history, m_theta, grad)
 
                         ELSE
 
@@ -3014,17 +3027,25 @@ CONTAINS
 
                            ENDDO
 
-                        ENDIF
+                        ELSE IF (l_bfgs) THEN
+
+                           CALL lbfgs_get_direction(nlmo_lbfgs_history, m_theta, grad, step)
+
+                        ENDIF ! which method?
 
                      ENDIF ! compute approximate inverse hessian
 
-                     DO ispin = 1, nspins
+                     IF (.NOT. l_bfgs) THEN
 
-                        CALL dbcsr_hadamard_product(approx_inv_hessian(ispin), &
-                                grad(ispin), step(ispin))
-                        CALL dbcsr_scale(step(ispin), -1.0_dp)
+                       DO ispin = 1, nspins
 
-                     ENDDO ! ispin
+                           CALL dbcsr_hadamard_product(approx_inv_hessian(ispin), &
+                                   grad(ispin), step(ispin))
+                           CALL dbcsr_scale(step(ispin), -1.0_dp)
+
+                        ENDDO ! ispin
+
+                     ENDIF
 
                   ENDIF ! second derivative type fork
 
@@ -3223,6 +3244,9 @@ CONTAINS
       ENDIF
 
       ! clean up
+      IF (l_bfgs) THEN
+         CALL lbfgs_release(nlmo_lbfgs_history)
+      ENDIF
       DO ispin = 1, nspins
          DO idim0 = 1, SIZE(m_B0, 2)
             DO reim = 1, SIZE(m_B0, 1)
