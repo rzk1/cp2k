@@ -10,26 +10,20 @@
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
 MODULE almo_scf_lbfgs_types
-   USE cp_external_control,             ONLY: external_control
-   USE cp_files,                        ONLY: close_file,&
-                                              open_file
+   !USE cp_external_control,             ONLY: external_control
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type
-   USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
-                                              cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
+   !USE cp_log_handling,                 ONLY: cp_to_string
    USE dbcsr_api,                       ONLY: dbcsr_add, &
                                               dbcsr_scale, &
+                                              dbcsr_print, &
                                               dbcsr_type, &
                                               dbcsr_copy, &
                                               dbcsr_create, &
                                               dbcsr_dot, &
                                               dbcsr_release
    USE kinds,                           ONLY: dp
-   USE machine,                         ONLY: m_flush,&
-                                              m_walltime
-   USE cp_log_handling,                 ONLY: cp_to_string
 
 #include "./base/base_uses.f90"
 
@@ -141,9 +135,17 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE lbfgs_history_last_rho(history)
 
-      TYPE(lbfgs_history_type)                            :: history
+      TYPE(lbfgs_history_type)                           :: history
 
-      INTEGER                                             :: istore, ispin
+      INTEGER                                            :: istore, ispin, unit_nr
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      logger => cp_get_default_logger()
+      IF (logger%para_env%mepos == logger%para_env%source) THEN
+         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         unit_nr = -1
+      ENDIF
 
       DO ispin = 1, SIZE(history%matrix,1)
 
@@ -151,6 +153,9 @@ CONTAINS
          CALL dbcsr_dot(history%matrix(ispin, istore, 1), &
                         history%matrix(ispin, istore, 2), &
                         history%rho(ispin, istore))
+         IF (unit_nr > 0) THEN
+            WRITE (unit_nr, *) "Rho in cell ", istore, " is computed ", history%rho(ispin, istore)
+         ENDIF
 
       ENDDO ! ispin
 
@@ -167,7 +172,15 @@ CONTAINS
       INTEGER, INTENT(IN)                                 :: vartype, action
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)          :: matrix
 
-      INTEGER                                            :: ispin, istore
+      INTEGER                                            :: ispin, istore, unit_nr
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      logger => cp_get_default_logger()
+      IF (logger%para_env%mepos == logger%para_env%source) THEN
+         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         unit_nr = -1
+      ENDIF
 
       ! increase the counter: it moves the pointer to the next cell
       ! for action==1 this is a "pretend" increase; the pointer will be moved back in the end
@@ -176,11 +189,17 @@ CONTAINS
       DO ispin = 1, SIZE(history%matrix,1)
 
          istore = MOD(history%istore(vartype)-1, history%nstore)+1
+         IF (unit_nr > 0) THEN
+            WRITE (unit_nr, *) "Action ", action, " modifying cell ", istore
+         END IF
 
          IF ( history%istore(vartype) <= history%nstore .AND. &
              action .EQ. 1 ) THEN
             CALL dbcsr_create(history%matrix(ispin, istore, vartype), &
                               template=matrix(ispin) )
+            IF (unit_nr > 0) THEN
+               WRITE (unit_nr, *) "Creating new matrix..."
+            END IF
          ENDIF
 
          IF (action .EQ. 1) THEN
@@ -213,6 +232,14 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), ALLOCATABLE           :: alpha
       REAL(KIND=dp)                                      :: gammak, beta
       TYPE(dbcsr_type)                                   :: q
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      logger => cp_get_default_logger()
+      IF (logger%para_env%mepos == logger%para_env%source) THEN
+         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         unit_nr = -1
+      ENDIF
 
       IF (history%istore(1) .NE. history%istore(2)) THEN
          CPABORT("BFGS APIs are not used correctly")
@@ -237,6 +264,10 @@ CONTAINS
             ! location: from recent to oldest stored
             istore = MOD(history%istore(1)-iterm, history%nstore)+1
 
+            IF (unit_nr > 0) THEN
+               WRITE (unit_nr, *) "Record locator: ", istore
+            END IF
+
             CALL dbcsr_dot(history%matrix(ispin, istore, 1), q, alpha(iterm))
             alpha(iterm) = history%rho(ispin, istore) * alpha(iterm)
             CALL dbcsr_add(q, history%matrix(ispin, istore, 2), 1.0_dp, -alpha(iterm))
@@ -246,6 +277,9 @@ CONTAINS
             IF (iterm .EQ. 1) THEN
                CALL dbcsr_dot(history%matrix(ispin, istore, 2), history%matrix(ispin, istore, 2), gammak)
                gammak = 1.0_dp / (gammak * history%rho(ispin, istore) )
+               IF (unit_nr > 0) THEN
+                  WRITE (unit_nr, *) "Gamma_k: ", gammak
+               END IF
             ENDIF
 
          ENDDO ! iterm, first loop from recent to oldest

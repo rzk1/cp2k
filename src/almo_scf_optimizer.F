@@ -2942,6 +2942,10 @@ CONTAINS
                         ELSE IF (l_bfgs) THEN
 
                            CALL lbfgs_seed(nlmo_lbfgs_history, m_theta, grad)
+                           DO ispin = 1, nspins
+                               CALL dbcsr_copy(step(ispin), grad(ispin))
+                               CALL dbcsr_scale(step(ispin), -1.0_dp)
+                           ENDDO ! ispin
 
                         ELSE
 
@@ -3037,7 +3041,7 @@ CONTAINS
 
                      IF (.NOT. l_bfgs) THEN
 
-                       DO ispin = 1, nspins
+                        DO ispin = 1, nspins
 
                            CALL dbcsr_hadamard_product(approx_inv_hessian(ispin), &
                                    grad(ispin), step(ispin))
