@@ -45,9 +45,10 @@ MODULE almo_scf_types
    ! methods that add penalty terms to the energy functional
    TYPE penalty_type
 
-      REAL(KIND=dp)      :: occ_vol_coeff, occ_loc_coeff, energy_coeff, final_determinant, &
-                            det_error, vol_coeff_dec_factor
-      INTEGER            :: occ_vol_method, occ_loc_method, operator_type
+      REAL(KIND=dp)      :: final_determinant,penalty_strength,  &
+                            determinant_tolerance, penalty_strength_dec_factor, &
+                            compactification_filter_start
+      INTEGER            :: operator_type
 
    END TYPE penalty_type
 
@@ -218,7 +219,8 @@ MODULE almo_scf_types
       LOGICAL              :: s_sqrt_done
       REAL(KIND=dp)        :: almo_scf_energy
       LOGICAL              :: orthogonal_basis, fixed_mu
-      LOGICAL              :: return_orthogonalized_mos, construct_nlmos
+      LOGICAL              :: return_orthogonalized_mos, construct_nlmos, &
+                              virtual_nlmos
 
       !! Smearing control
       !! smear flag allow to retrieve eigenvalues in almo_scf with diag algorithm and create occupation-scaled ALMO orbitals

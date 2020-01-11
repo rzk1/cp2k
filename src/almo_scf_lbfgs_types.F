@@ -153,6 +153,9 @@ CONTAINS
          CALL dbcsr_dot(history%matrix(ispin, istore, 1), &
                         history%matrix(ispin, istore, 2), &
                         history%rho(ispin, istore))
+
+         history%rho(ispin, istore) = 1.0_dp / history%rho(ispin, istore)
+
          IF (unit_nr > 0) THEN
             WRITE (unit_nr, *) "Rho in cell ", istore, " is computed ", history%rho(ispin, istore)
          ENDIF

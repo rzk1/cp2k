@@ -1028,13 +1028,11 @@ CONTAINS
       ! A = T for n = 2
       ! A = 2T for n = 4
       ! A = (32/6)T for n = 6
-      energy_coeff = optimizer%opt_penalty%energy_coeff
-      localiz_coeff = optimizer%opt_penalty%occ_loc_coeff
-      penalty_amplitude=optimizer%opt_penalty%occ_vol_coeff
-      penalty_occ_vol = ( optimizer%opt_penalty%occ_vol_method .NE. penalty_type_none .AND. &
-                          my_special_case .EQ. xalmo_case_fully_deloc )
-      penalty_occ_local = ( optimizer%opt_penalty%occ_loc_method .NE. penalty_type_none .AND. &
-                          my_special_case .EQ. xalmo_case_fully_deloc )
+      energy_coeff = 1.0_dp !optimizer%opt_penalty%energy_coeff
+      localiz_coeff = 0.0_dp !optimizer%opt_penalty%occ_loc_coeff
+      penalty_amplitude = 0.0_dp !optimizer%opt_penalty%occ_vol_coeff
+      penalty_occ_vol = .FALSE. !( optimizer%opt_penalty%occ_vol_method .NE. penalty_type_none .AND. my_special_case .EQ. xalmo_case_fully_deloc )
+      penalty_occ_local = .FALSE. !( optimizer%opt_penalty%occ_loc_method .NE. penalty_type_none .AND. my_special_case .EQ. xalmo_case_fully_deloc )
       normalize_orbitals = penalty_occ_vol .OR. penalty_occ_local
       !normalize_orbitals = .TRUE.
       ! not used with lndet: penalty_order=2
@@ -2232,7 +2230,7 @@ CONTAINS
    SUBROUTINE almo_scf_construct_nlmos(qs_env, optimizer, &
                                  matrix_s, matrix_mo_in, matrix_mo_out, &
                                  template_matrix_sigma, overlap_determinant, &
-                                 mat_distr_aos, eps_filter)
+                                 mat_distr_aos, virtuals, eps_filter)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(optimizer_options_type)                       :: optimizer
       TYPE(dbcsr_type)                                   :: matrix_s
@@ -2241,6 +2239,7 @@ CONTAINS
                                                             template_matrix_sigma
       REAL(KIND=dp), INTENT(INOUT)                       :: overlap_determinant
       INTEGER, INTENT(IN)                                :: mat_distr_aos
+      LOGICAL                                            :: virtuals
       REAL(KIND=dp), INTENT(IN)                          :: eps_filter
 
       CHARACTER(len=*), PARAMETER :: routineN = 'almo_scf_construct_nlmos', &
@@ -2262,10 +2261,10 @@ CONTAINS
                                                             tempNOcc1, tempOccOcc1, tempOccOcc2, &
                                                             tempOccOcc3, bfgs_y, bfgs_s
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: z2, reim_diag, weights, grad_norm_spin, &
-                                                            diagonal, penalty_occ_vol_prefactor, &
+                                                            diagonal, penalty_vol_prefactor, &
                                                             suggested_vol_penalty
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: first_sgf, last_sgf, nsgf
-      REAL(KIND=dp)                                      :: e1, det1, denom, denom2, &
+      REAL(KIND=dp)                                      :: e1, det1, denom, denom2, obj_function_ispin, &
                                                             objf_new, objf_old, localiz_coeff, &
                                                             penalty_amplitude, spin_factor, &
                                                             grad_norm, pre_occ_vol_coeff, &
@@ -2277,9 +2276,9 @@ CONTAINS
                                                             line_search_error, &
                                                             bfgs_sum, bfgs_rho, &
                                                             t1, fval, penalty_func_new, &
-                                                            localization_obj_function_ispin
-      LOGICAL                                            :: penalty_local, penalty_occ_vol, &
-                                                            prepare_to_exit, outer_prepare_to_exit, &
+                                                            localization_obj_function_ispin, &
+                                                            penalty_func_ispin
+      LOGICAL                                            :: prepare_to_exit, outer_prepare_to_exit, &
                                                             converged, line_search, &
                                                             reset_conjugator, just_started, &
                                                             d_bfgs, l_bfgs
@@ -2309,8 +2308,13 @@ CONTAINS
 
       IF (unit_nr > 0) THEN
          WRITE (unit_nr, *)
-         WRITE (unit_nr, '(T2,A,A,A)') REPEAT("-", 28), &
-            " Optimization of NLMOs ", REPEAT("-", 28)
+         IF (.NOT. virtuals) THEN
+            WRITE (unit_nr, '(T2,A,A,A)') REPEAT("-", 24), &
+               " Optimization of OCCUPIED NLMOs ", REPEAT("-", 23)
+         ELSE
+            WRITE (unit_nr, '(T2,A,A,A)') REPEAT("-", 24), &
+               " Optimization of VIRTUAL NLMOs ", REPEAT("-", 24)
+         ENDIF
          WRITE (unit_nr, *)
          WRITE (unit_nr, '(T2,A13,A6,A23,A14,A14,A9)') "Method", "Iter", &
             "Objective Function", "Change", "Convergence", "Time"
@@ -2409,10 +2413,9 @@ CONTAINS
       END SELECT
 
       ! penalty amplitude adjusts the strenght of volume conservation
-      localiz_coeff = optimizer%opt_penalty%occ_loc_coeff
-      penalty_amplitude=optimizer%opt_penalty%occ_vol_coeff
-      penalty_occ_vol = ( optimizer%opt_penalty%occ_vol_method .NE. penalty_type_none ) 
-      penalty_local = ( optimizer%opt_penalty%occ_loc_method .NE. penalty_type_none )
+      penalty_amplitude=optimizer%opt_penalty%penalty_strength
+      !penalty_occ_vol = ( optimizer%opt_penalty%occ_vol_method .NE. penalty_type_none ) 
+      !penalty_local = ( optimizer%opt_penalty%occ_loc_method .NE. penalty_type_none )
 
       ! preconditioner control
       prec_type = optimizer%preconditioner
@@ -2436,7 +2439,7 @@ CONTAINS
 
       ALLOCATE(grad_norm_spin(nspins))
       ALLOCATE(nocc(nspins))
-      ALLOCATE(penalty_occ_vol_prefactor(nspins))
+      ALLOCATE(penalty_vol_prefactor(nspins))
       ALLOCATE(suggested_vol_penalty(nspins))
 
       ! create a local copy of matrix_mo_in because
@@ -2534,7 +2537,7 @@ CONTAINS
          CALL dbcsr_get_info(template_matrix_sigma(ispin), &
                  nfullrows_total = nocc(ispin) )
 
-         penalty_occ_vol_prefactor(ispin) = -penalty_amplitude !KEEP: * spin_factor * nocc(ispin)
+         penalty_vol_prefactor(ispin) = -penalty_amplitude !KEEP: * spin_factor * nocc(ispin)
 
          ! compute m_S0=T0^t.S.T0
          CALL dbcsr_multiply("N", "N", 1.0_dp, &
@@ -2639,7 +2642,7 @@ CONTAINS
       outer_iteration = 0
       grad_norm = 0.0_dp
       penalty_func_new=0.0_dp
-      linear_search_type = 2 ! safe restart, no quadratic assumption, takes more steps
+      linear_search_type = 1 ! safe restart, no quadratic assumption, takes more steps
 
       DO
 
@@ -2651,6 +2654,7 @@ CONTAINS
          iteration = 0
          cg_iteration = 0
          line_search_iteration = 0
+         obj_function_ispin = 0.0_dp
          objf_new = 0.0_dp
          objf_old = 0.0_dp
          line_search_error = 0.0_dp
@@ -2704,91 +2708,120 @@ CONTAINS
             penalty_func_new = 0.0_dp
             DO ispin = 1, nspins
 
-               IF (penalty_local) THEN
+               CALL compute_obj_nlmos( &
+                  !obj_function_ispin=obj_function_ispin, &
+                  localization_obj_function_ispin=localization_obj_function_ispin, &
+                  penalty_func_ispin=penalty_func_ispin, &
+                  overlap_determinant=overlap_determinant, &
+                  m_sigma=m_sigma(ispin), &
+                  nocc=nocc(ispin), &
+                  m_B0=m_B0(:,:,ispin), &
+                  m_theta_normalized=m_theta_normalized(ispin), &
+                  template_matrix_mo=matrix_mo_out(ispin), &
+                  weights=weights, &
+                  m_S0=m_S0(ispin), &
+                  just_started=just_started, &
+                  penalty_vol_prefactor=penalty_vol_prefactor(ispin), &
+                  penalty_amplitude=penalty_amplitude, &
+                  eps_filter=eps_filter)
 
-                  localization_obj_function_ispin = 0.0_dp
-                  ALLOCATE(z2(nocc(ispin)))
-                  ALLOCATE(reim_diag(nocc(ispin)))
-
-                  CALL dbcsr_get_info( tempOccOcc2(ispin), group=para_group )
-
-                  DO idim0 = 1, SIZE(m_B0, 2) ! this loop is over miller ind
-
-                     z2(:) = 0.0_dp
-
-                     DO reim = 1, SIZE(m_B0, 1) ! this loop is over Re/Im
-
-                        CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                                m_B0(reim, idim0, ispin), &
-                                m_theta_normalized(ispin), &
-                                0.0_dp, tempOccOcc1(ispin), &
-                                filter_eps=eps_filter)
-                        CALL dbcsr_set(tempOccOcc2(ispin), 0.0_dp)
-                        CALL dbcsr_add_on_diag(tempOccOcc2(ispin), 1.0_dp)
-                        CALL dbcsr_multiply("T", "N", 1.0_dp, &
-                                m_theta_normalized(ispin), &
-                                tempOccOcc1(ispin), &
-                                0.0_dp, tempOccOcc2(ispin), &
-                                retain_sparsity=.TRUE.)
-
-                        reim_diag=0.0_dp
-                        CALL dbcsr_get_diag(tempOccOcc2(ispin),reim_diag)
-                        CALL mp_sum(reim_diag, para_group)
-                        z2(:) = z2(:) + reim_diag(:)*reim_diag(:)
-
-                     ENDDO
-
-                     DO ielem=1, nocc(ispin)
-                        SELECT CASE(2) ! allows for selection of different spread functionals
-                        CASE (1) ! functional =  -W_I * log( |z_I|^2 )
-                           fval = -weights(idim0) * LOG( ABS(z2(ielem)) )
-                        CASE (2) ! functional =  W_I * ( 1 - |z_I|^2 )
-                           fval = weights(idim0) - weights(idim0) * ABS(z2(ielem))
-                        CASE (3) ! functional =  W_I * ( 1 - |z_I| )
-                           fval = weights(idim0) - weights(idim0) * SQRT( ABS(z2(ielem)) )
-                        END SELECT
-                        localization_obj_function_ispin = localization_obj_function_ispin + fval
-                     ENDDO
-
-                  ENDDO ! end loop over idim0
-
-                  DEALLOCATE(z2)
-                  DEALLOCATE(reim_diag)
-
-                  localization_obj_function_ispin = localiz_coeff * localization_obj_function_ispin
-                  localization_obj_function = localization_obj_function + localization_obj_function_ispin
-
-               ENDIF
-
-               IF (penalty_occ_vol) THEN
-
-                  CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                          m_S0(ispin), &
-                          m_theta_normalized(ispin), &
-                          0.0_dp, tempOccOcc1(ispin), &
-                          filter_eps=eps_filter)
-                  ! compute current sigma
-                  CALL dbcsr_multiply("T", "N", 1.0_dp, &
-                          m_theta_normalized(ispin), &
-                          tempOccOcc1(ispin), &
-                          0.0_dp, m_sigma(ispin), &
-                          filter_eps=eps_filter)
-
-                  CALL determinant(m_sigma(ispin), det1, &
-                          eps_filter)
-                  ! save the current determinant
-                  overlap_determinant = det1
-
-                  IF (just_started .AND. penalty_amplitude .lt. 0.0_dp ) THEN 
-                     penalty_occ_vol_prefactor(ispin) = - (-penalty_amplitude)*localization_obj_function_ispin
-                  ENDIF
-                  penalty_func_new = penalty_func_new + penalty_occ_vol_prefactor(ispin) * LOG(det1)
-
-               ENDIF
+               localization_obj_function = localization_obj_function + localization_obj_function_ispin
+               penalty_func_new = penalty_func_new + penalty_func_ispin
 
             ENDDO ! ispin
             objf_new = penalty_func_new + localization_obj_function
-            !!!! -- end objective function
+
+!            localization_obj_function = 0.0_dp
+!            penalty_func_new = 0.0_dp
+!            DO ispin = 1, nspins
+!
+!               IF (penalty_local) THEN
+!
+!                  localization_obj_function_ispin = 0.0_dp
+!                  ALLOCATE(z2(nocc(ispin)))
+!                  ALLOCATE(reim_diag(nocc(ispin)))
+!
+!                  CALL dbcsr_get_info( tempOccOcc2(ispin), group=para_group )
+!
+!                  DO idim0 = 1, SIZE(m_B0, 2) ! this loop is over miller ind
+!
+!                     z2(:) = 0.0_dp
+!
+!                     DO reim = 1, SIZE(m_B0, 1) ! this loop is over Re/Im
+!
+!                        CALL dbcsr_multiply("N", "N", 1.0_dp, &
+!                                m_B0(reim, idim0, ispin), &
+!                                m_theta_normalized(ispin), &
+!                                0.0_dp, tempOccOcc1(ispin), &
+!                                filter_eps=eps_filter)
+!                        CALL dbcsr_set(tempOccOcc2(ispin), 0.0_dp)
+!                        CALL dbcsr_add_on_diag(tempOccOcc2(ispin), 1.0_dp)
+!                        CALL dbcsr_multiply("T", "N", 1.0_dp, &
+!                                m_theta_normalized(ispin), &
+!                                tempOccOcc1(ispin), &
+!                                0.0_dp, tempOccOcc2(ispin), &
+!                                retain_sparsity=.TRUE.)
+!
+!                        reim_diag=0.0_dp
+!                        CALL dbcsr_get_diag(tempOccOcc2(ispin),reim_diag)
+!                        CALL mp_sum(reim_diag, para_group)
+!                        z2(:) = z2(:) + reim_diag(:)*reim_diag(:)
+!
+!                     ENDDO
+!
+!                     DO ielem=1, nocc(ispin)
+!                        SELECT CASE(2) ! allows for selection of different spread functionals
+!                        CASE (1) ! functional =  -W_I * log( |z_I|^2 )
+!                           fval = -weights(idim0) * LOG( ABS(z2(ielem)) )
+!                        CASE (2) ! functional =  W_I * ( 1 - |z_I|^2 )
+!                           fval = weights(idim0) - weights(idim0) * ABS(z2(ielem))
+!                        CASE (3) ! functional =  W_I * ( 1 - |z_I| )
+!                           fval = weights(idim0) - weights(idim0) * SQRT( ABS(z2(ielem)) )
+!                        END SELECT
+!                        localization_obj_function_ispin = localization_obj_function_ispin + fval
+!                     ENDDO
+!
+!                  ENDDO ! end loop over idim0
+!
+!                  DEALLOCATE(z2)
+!                  DEALLOCATE(reim_diag)
+!
+!                  localization_obj_function_ispin = localiz_coeff * localization_obj_function_ispin
+!                  localization_obj_function = localization_obj_function + localization_obj_function_ispin
+!
+!               ENDIF
+!
+!               ! save the current determinant
+!               overlap_determinant = det1
+!               IF (penalty_occ_vol) THEN
+!
+!                  CALL dbcsr_multiply("N", "N", 1.0_dp, &
+!                          m_S0(ispin), &
+!                          m_theta_normalized(ispin), &
+!                          0.0_dp, tempOccOcc1(ispin), &
+!                          filter_eps=eps_filter)
+!                  ! compute current sigma
+!                  CALL dbcsr_multiply("T", "N", 1.0_dp, &
+!                          m_theta_normalized(ispin), &
+!                          tempOccOcc1(ispin), &
+!                          0.0_dp, m_sigma(ispin), &
+!                          filter_eps=eps_filter)
+!
+!                  CALL determinant(m_sigma(ispin), det1, &
+!                          eps_filter)
+!                  ! save the current determinant
+!                  overlap_determinant = det1
+!
+!                  IF (just_started .AND. penalty_amplitude .lt. 0.0_dp ) THEN 
+!                     penalty_occ_vol_prefactor(ispin) = - (-penalty_amplitude)*localization_obj_function_ispin
+!                  ENDIF
+!                  penalty_func_new = penalty_func_new + penalty_occ_vol_prefactor(ispin) * LOG(det1)
+!
+!               ENDIF
+!
+!            ENDDO ! ispin
+!            objf_new = penalty_func_new + localization_obj_function
+!            !!!! -- end objective function
 
             DO ispin = 1, nspins
                ! save the previous gradient to compute beta
@@ -2803,14 +2836,12 @@ CONTAINS
             ! compute the gradient
             DO ispin = 1, nspins
 
-               IF (penalty_occ_vol) THEN
-                  CALL invert_Hotelling( &
-                            matrix_inverse=m_siginv(ispin), &
-                            matrix=m_sigma(ispin), &
-                            threshold=eps_filter*10.0_dp, &
-                            filter_eps=eps_filter, &
-                            silent=.FALSE.)
-               ENDIF
+               CALL invert_Hotelling( &
+                         matrix_inverse=m_siginv(ispin), &
+                         matrix=m_sigma(ispin), &
+                         threshold=eps_filter*10.0_dp, &
+                         filter_eps=eps_filter, &
+                         silent=.FALSE.)
 
                CALL compute_gradient_nlmos( &
                   m_grad_out=grad(ispin), &
@@ -2820,10 +2851,7 @@ CONTAINS
                   m_theta_normalized=m_theta_normalized(ispin), &
                   m_siginv=m_siginv(ispin), &
                   m_sig_sqrti_ii=m_sig_sqrti_ii(ispin), &
-                  do_penalty_occ_vol=penalty_occ_vol, &
-                  do_penalty_local=penalty_local, &
-                  local_coeff = localiz_coeff, &
-                  occ_vol_prefactor=penalty_occ_vol_prefactor(ispin), &
+                  penalty_vol_prefactor=penalty_vol_prefactor(ispin), &
                   eps_filter=eps_filter, &
                   suggested_vol_penalty=suggested_vol_penalty(ispin))
 
@@ -3115,7 +3143,8 @@ CONTAINS
                            step_size = optimizer%lin_search_step_size_guess
                         ELSE
                            ! take the last value
-                           step_size = next_step_size_guess*1.05_dp
+                           step_size = optimizer%lin_search_step_size_guess
+                           !step_size = next_step_size_guess*1.05_dp
                         ENDIF
                      ENDIF
                   ELSE IF (linear_search_type .EQ. 2) THEN ! this is cautious LS
@@ -3189,14 +3218,10 @@ CONTAINS
                   iter_type, iteration, &
                   objf_new, objf_diff, grad_norm, &
                   t2-t1 
-               IF (penalty_local) THEN
-                  WRITE(unit_nr,'(T2,A19,F23.10)') &
-                          "Localization component:", localization_obj_function
-               ENDIF
-               IF (penalty_occ_vol) THEN
-                  WRITE(unit_nr,'(T2,A19,F23.10)') &
-                          "Volume penalty component:", penalty_func_new
-               ENDIF
+               WRITE(unit_nr,'(T2,A19,F23.10)') &
+                       "Localization component:", localization_obj_function
+               WRITE(unit_nr,'(T2,A19,F23.10)') &
+                       "Volume penalty component:", penalty_func_new
             ENDIF
 
 
@@ -3223,28 +3248,24 @@ CONTAINS
       !KEEP:       suggested_vol_penalty(ispin) / (spin_factor * nocc(ispin))
       !KEEP: ENDDO
       !KEEP: optimizer%opt_penalty%occ_vol_coeff = optimizer%opt_penalty%occ_vol_coeff / nspins
-      optimizer%opt_penalty%occ_vol_coeff = 0.0_dp
+      optimizer%opt_penalty%penalty_strength = 0.0_dp
       DO ispin=1, nspins
-         optimizer%opt_penalty%occ_vol_coeff = optimizer%opt_penalty%occ_vol_coeff + &
-            (-1.0_dp)*penalty_occ_vol_prefactor(ispin)
+         optimizer%opt_penalty%penalty_strength = optimizer%opt_penalty%penalty_strength + &
+            (-1.0_dp)*penalty_vol_prefactor(ispin)
       ENDDO
-      optimizer%opt_penalty%occ_vol_coeff = optimizer%opt_penalty%occ_vol_coeff / nspins
+      optimizer%opt_penalty%penalty_strength = optimizer%opt_penalty%penalty_strength / nspins
 
       IF (unit_nr > 0) THEN
-         IF (penalty_local) THEN
-            WRITE(unit_nr,'()')
-            WRITE(unit_nr,'(T2,A19,F23.10)') &
-                    "FINAL LOCALIZATION:", localization_obj_function
-         ENDIF
-         IF (penalty_occ_vol) THEN
-            WRITE(unit_nr,'()')
-            WRITE(unit_nr,'(T2,A19,F23.10)') &
-                    "FINAL DETERMINANT:", overlap_determinant
+         WRITE(unit_nr,'()')
+         WRITE(unit_nr,'(T2,A19,F23.10)') &
+                 "FINAL LOCALIZATION:", localization_obj_function
+         WRITE(unit_nr,'()')
+         WRITE(unit_nr,'(T2,A19,F23.10)') &
+                 "FINAL DETERMINANT:", overlap_determinant
 
-            WRITE(unit_nr,'()')
-            WRITE(unit_nr,'(T2,A19,F23.10)') &
-                        "PENALTY COEFF", optimizer%opt_penalty%occ_vol_coeff
-         ENDIF
+         WRITE(unit_nr,'()')
+         WRITE(unit_nr,'(T2,A19,F23.10)') &
+                     "PENALTY COEFF", optimizer%opt_penalty%penalty_strength
       ENDIF
 
       ! clean up
@@ -3280,7 +3301,7 @@ CONTAINS
 
       DEALLOCATE(grad_norm_spin)
       DEALLOCATE(nocc)
-      DEALLOCATE(penalty_occ_vol_prefactor)
+      DEALLOCATE(penalty_vol_prefactor)
       DEALLOCATE(suggested_vol_penalty)
 
       DEALLOCATE(approx_inv_hessian)
@@ -6764,15 +6785,136 @@ CONTAINS
    END SUBROUTINE print_mathematica_matrix
 
 ! *****************************************************************************
+!> \brief Compute the objective functional of NLMOs
+!> \par History
+!>       2020.01 created [Ziling Luo]
+!> \author Ziling Luo
+! *****************************************************************************
+   SUBROUTINE compute_obj_nlmos(localization_obj_function_ispin, penalty_func_ispin, &
+      penalty_vol_prefactor, overlap_determinant, m_sigma, nocc, m_B0, &
+      m_theta_normalized, template_matrix_mo, weights, m_S0, just_started, &
+      penalty_amplitude, eps_filter)
+
+      REAL(KIND=dp), INTENT(INOUT)                       :: localization_obj_function_ispin, &
+                                                            penalty_func_ispin, &
+                                                            penalty_vol_prefactor, &
+                                                            overlap_determinant
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: m_sigma
+      TYPE(dbcsr_type), INTENT(IN)                       :: template_matrix_mo
+      TYPE(dbcsr_type), DIMENSION(:, :), INTENT(IN)      :: m_B0
+      INTEGER                                            :: nocc
+      TYPE(dbcsr_type), INTENT(IN)                       :: m_S0, m_theta_normalized
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: weights
+      REAL(KIND=dp), INTENT(IN)                          :: eps_filter, &
+                                                            penalty_amplitude
+      LOGICAL, INTENT(IN)                                :: just_started
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'compute_obj_nlmos', &
+         routineP = moduleN//':'//routineN
+
+      REAL(KIND=dp), DIMENSION(:), ALLOCATABLE           :: reim_diag, z2
+      TYPE(dbcsr_type)                                   :: tempNOcc1, tempOccOcc1, tempOccOcc2
+      INTEGER                                            :: handle, idim0, ielem, para_group, &
+                                                            reim
+      REAL(KIND=dp)                                      :: fval, det1
+
+      CALL timeset(routineN, handle)
+
+      CALL dbcsr_create(tempNOcc1, &
+                        template=template_matrix_mo, &
+                        matrix_type=dbcsr_type_no_symmetry)
+      CALL dbcsr_create(tempOccOcc1, &
+                        template=m_theta_normalized, &
+                        matrix_type=dbcsr_type_no_symmetry)
+      CALL dbcsr_create(tempOccOcc2, &
+                        template=m_theta_normalized, &
+                        matrix_type=dbcsr_type_no_symmetry)
+
+      localization_obj_function_ispin = 0.0_dp
+      penalty_func_ispin = 0.0_dp
+      ALLOCATE(z2(nocc))
+      ALLOCATE(reim_diag(nocc))
+
+      CALL dbcsr_get_info(tempOccOcc2, group=para_group )
+
+      DO idim0 = 1, SIZE(m_B0, 2) ! this loop is over miller ind
+
+         z2(:) = 0.0_dp
+
+         DO reim = 1, SIZE(m_B0, 1) ! this loop is over Re/Im
+
+            CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                    m_B0(reim, idim0), &
+                    m_theta_normalized, &
+                    0.0_dp, tempOccOcc1, &
+                    filter_eps=eps_filter)
+            CALL dbcsr_set(tempOccOcc2, 0.0_dp)
+            CALL dbcsr_add_on_diag(tempOccOcc2, 1.0_dp)
+            CALL dbcsr_multiply("T", "N", 1.0_dp, &
+                    m_theta_normalized, &
+                    tempOccOcc1, &
+                    0.0_dp, tempOccOcc2, &
+                    retain_sparsity=.TRUE.)
+
+            reim_diag=0.0_dp
+            CALL dbcsr_get_diag(tempOccOcc2,reim_diag)
+            CALL mp_sum(reim_diag, para_group)
+            z2(:) = z2(:) + reim_diag(:)*reim_diag(:)
+
+         ENDDO
+
+         DO ielem=1, nocc
+            SELECT CASE(2) ! allows for selection of different spread functionals
+            CASE (1) ! functional =  -W_I * log( |z_I|^2 )
+               fval = -weights(idim0) * LOG( ABS(z2(ielem)) )
+            CASE (2) ! functional =  W_I * ( 1 - |z_I|^2 )
+               fval = weights(idim0) - weights(idim0) * ABS(z2(ielem))
+            CASE (3) ! functional =  W_I * ( 1 - |z_I| )
+               fval = weights(idim0) - weights(idim0) * SQRT( ABS(z2(ielem)) )
+            END SELECT
+            localization_obj_function_ispin = localization_obj_function_ispin + fval
+         ENDDO
+
+      ENDDO ! end loop over idim0
+
+      DEALLOCATE(z2)
+      DEALLOCATE(reim_diag)
+
+      CALL dbcsr_multiply("N", "N", 1.0_dp, &
+              m_S0, &
+              m_theta_normalized, &
+              0.0_dp, tempOccOcc1, &
+              filter_eps=eps_filter)
+      ! compute current sigma
+      CALL dbcsr_multiply("T", "N", 1.0_dp, &
+              m_theta_normalized, &
+              tempOccOcc1, &
+              0.0_dp, m_sigma, &
+              filter_eps=eps_filter)
+
+      CALL determinant(m_sigma, det1, &
+              eps_filter)
+      ! save the current determinant
+      overlap_determinant = det1
+
+      IF (just_started .AND. penalty_amplitude .lt. 0.0_dp ) THEN
+         penalty_vol_prefactor = - (-penalty_amplitude)*localization_obj_function_ispin
+      ENDIF
+      penalty_func_ispin = penalty_func_ispin + penalty_vol_prefactor * LOG(det1)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE compute_obj_nlmos
+
+! *****************************************************************************
 !> \brief Compute the gradient wrt the main variable
 !> \par History
 !>       2018.10 created [Ziling Luo]
 !> \author Ziling Luo
 ! *****************************************************************************
    SUBROUTINE compute_gradient_nlmos(m_grad_out, m_B0, weights, &
-      m_S0, m_theta_normalized, &
-      m_siginv, m_sig_sqrti_ii, do_penalty_occ_vol, do_penalty_local, &
-      local_coeff, occ_vol_prefactor, eps_filter, suggested_vol_penalty)
+      m_S0, m_theta_normalized, m_siginv, m_sig_sqrti_ii, &
+      penalty_vol_prefactor, eps_filter, suggested_vol_penalty)
 
       TYPE(dbcsr_type), INTENT(INOUT)                    :: m_grad_out
       TYPE(dbcsr_type), DIMENSION(:, :), INTENT(IN)      :: m_B0
@@ -6780,12 +6922,9 @@ CONTAINS
       TYPE(dbcsr_type), INTENT(IN)                       :: m_S0, m_theta_normalized, &
                                                             m_siginv, &
                                                             m_sig_sqrti_ii
-      LOGICAL, INTENT(IN)                                :: do_penalty_occ_vol, &
-                                                            do_penalty_local
-      REAL(KIND=dp), INTENT(IN)                          :: occ_vol_prefactor, &
-                                                            eps_filter, &
-                                                            local_coeff
-      REAL(KIND=dp), INTENT(INOUT)                       :: suggested_vol_penalty 
+      REAL(KIND=dp), INTENT(IN)                          :: penalty_vol_prefactor, &
+                                                            eps_filter
+      REAL(KIND=dp), INTENT(INOUT)                       :: suggested_vol_penalty
 
       CHARACTER(len=*), PARAMETER :: routineN = 'compute_gradient_nlmos', &
          routineP = moduleN//':'//routineN
@@ -6818,67 +6957,63 @@ CONTAINS
       CALL dbcsr_set(m_temp_oo_1, 0.0_dp) ! accumulate the gradient wrt a_norm here
 
       ! do d_Omega/d_a_normalized first
-      IF (do_penalty_local) THEN
+      DO idim0 = 1, SIZE(m_B0, 2) ! this loop is over miller ind
 
-         DO idim0 = 1, SIZE(m_B0, 2) ! this loop is over miller ind
+         z2(:) = 0.0_dp
+         CALL dbcsr_set(m_temp_oo_2, 0.0_dp) ! accumulate index gradient here
+         DO reim = 1, SIZE(m_B0, 1) ! this loop is over Re/Im 
 
-            z2(:) = 0.0_dp
-            CALL dbcsr_set(m_temp_oo_2, 0.0_dp) ! accumulate index gradient here
-            DO reim = 1, SIZE(m_B0, 1) ! this loop is over Re/Im 
+                CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                        m_B0(reim, idim0), &
+                        m_theta_normalized, &
+                        0.0_dp, m_temp_oo_3, &
+                        filter_eps=eps_filter)
 
-                   CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                           m_B0(reim, idim0), &
-                           m_theta_normalized, &
-                           0.0_dp, m_temp_oo_3, &
-                           filter_eps=eps_filter)
+                ! result contain Re/Im part of Z for the current Miller index
+                ! warning - save time by computing only the diagonal elements
+                CALL dbcsr_multiply("T", "N", 1.0_dp, &
+                        m_theta_normalized, &
+                        m_temp_oo_3, &
+                        0.0_dp, m_temp_oo_4, &
+                        filter_eps=eps_filter)
 
-                   ! result contain Re/Im part of Z for the current Miller index
-                   ! warning - save time by computing only the diagonal elements
-                   CALL dbcsr_multiply("T", "N", 1.0_dp, &
-                           m_theta_normalized, &
-                           m_temp_oo_3, &
-                           0.0_dp, m_temp_oo_4, &
-                           filter_eps=eps_filter)
+                tg_diagonal(:)=0.0_dp
+                CALL dbcsr_get_diag(m_temp_oo_4,tg_diagonal)
+                CALL dbcsr_set(m_temp_oo_4,0.0_dp)
+                CALL dbcsr_set_diag(m_temp_oo_4,tg_diagonal)
+                !CALL mp_sum(tg_diagonal, para_group)
+                z2(:) = z2(:) + tg_diagonal(:)*tg_diagonal(:)
 
-                   tg_diagonal(:)=0.0_dp
-                   CALL dbcsr_get_diag(m_temp_oo_4,tg_diagonal)
-                   CALL dbcsr_set(m_temp_oo_4,0.0_dp)
-                   CALL dbcsr_set_diag(m_temp_oo_4,tg_diagonal)
-                   !CALL mp_sum(tg_diagonal, para_group)
-                   z2(:) = z2(:) + tg_diagonal(:)*tg_diagonal(:)
+                CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                    m_temp_oo_3, &
+                                    m_temp_oo_4, &
+                                    1.0_dp, m_temp_oo_2, &
+                                    filter_eps=eps_filter)
 
-                   CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                                       m_temp_oo_3, &
-                                       m_temp_oo_4, &
-                                       1.0_dp, m_temp_oo_2, &
-                                       filter_eps=eps_filter)
+         ENDDO
 
-            ENDDO
+         ! TODO: because some elements are zeros on some MPI tasks the
+         ! gradient evaluation will fail for CASE 1 and 3
+         SELECT CASE(2) ! allows for selection of different spread functionals
+         CASE (1) ! functional =  -W_I * log( |z_I|^2 )
+           z2(:) = -weights(idim0) / z2(:)
+         CASE (2) ! functional =  W_I * ( 1 - |z_I|^2 )
+           z2(:) = -weights(idim0)
+         CASE (3) ! functional =  W_I * ( 1 - |z_I| )
+           z2(:) = -weights(idim0) / ( 2 * sqrt(z2(:)) )
+         END SELECT
+         CALL dbcsr_set(m_temp_oo_3, 0.0_dp)
+         CALL dbcsr_set_diag(m_temp_oo_3, z2)
+         ! TODO: print this matrix to make sure its block structure is fine
+         ! and there are no unecessary elements
 
-            ! TODO: because some elements are zeros on some MPI tasks the
-            ! gradient evaluation will fail for CASE 1 and 3
-            SELECT CASE(2) ! allows for selection of different spread functionals
-            CASE (1) ! functional =  -W_I * log( |z_I|^2 )
-              z2(:) = -weights(idim0) / z2(:)
-            CASE (2) ! functional =  W_I * ( 1 - |z_I|^2 )
-              z2(:) = -weights(idim0)
-            CASE (3) ! functional =  W_I * ( 1 - |z_I| )
-              z2(:) = -weights(idim0) / ( 2 * sqrt(z2(:)) )
-            END SELECT
-            CALL dbcsr_set(m_temp_oo_3, 0.0_dp)
-            CALL dbcsr_set_diag(m_temp_oo_3, z2)
-            ! TODO: print this matrix to make sure its block structure is fine
-            ! and there are no unecessary elements
+         CALL dbcsr_multiply("N", "N", 4.0_dp, &
+                             m_temp_oo_2, &
+                             m_temp_oo_3, &
+                             1.0_dp, m_temp_oo_1, &
+                             filter_eps=eps_filter)
 
-            CALL dbcsr_multiply("N", "N", local_coeff*4.0_dp, &
-                                m_temp_oo_2, &
-                                m_temp_oo_3, &
-                                1.0_dp, m_temp_oo_1, &
-                                filter_eps=eps_filter)
-
-         ENDDO ! end loop over idim0
-
-      ENDIF
+      ENDDO ! end loop over idim0
       DEALLOCATE(z2)
       
       ! sigma0.a_norm is necessary for the volume penalty and normalization
@@ -6891,21 +7026,19 @@ CONTAINS
 
       ! add gradient of the penalty functional log[det(sigma)]
       ! G = 2*prefactor*sigma0.a_norm.sigma_inv
-      IF (do_penalty_occ_vol) THEN
-         CALL dbcsr_multiply("N", "N", &
-                             1.0_dp, &
-                             m_temp_oo_2, &
-                             m_siginv, &
-                             0.0_dp, m_temp_oo_3, &
-                             filter_eps=eps_filter)
-         CALL dbcsr_norm(m_temp_oo_3, &
-              dbcsr_norm_maxabsnorm, norm_scalar=norm_vol)
-         CALL dbcsr_norm(m_temp_oo_1, &
-              dbcsr_norm_maxabsnorm, norm_scalar=norm_loc)
-         suggested_vol_penalty = norm_loc/norm_vol 
-         CALL dbcsr_add(m_temp_oo_1,m_temp_oo_3,&
-            1.0_dp,2.0_dp*occ_vol_prefactor)
-      ENDIF
+      CALL dbcsr_multiply("N", "N", &
+                          1.0_dp, &
+                          m_temp_oo_2, &
+                          m_siginv, &
+                          0.0_dp, m_temp_oo_3, &
+                          filter_eps=eps_filter)
+      CALL dbcsr_norm(m_temp_oo_3, &
+           dbcsr_norm_maxabsnorm, norm_scalar=norm_vol)
+      CALL dbcsr_norm(m_temp_oo_1, &
+           dbcsr_norm_maxabsnorm, norm_scalar=norm_loc)
+      suggested_vol_penalty = norm_loc/norm_vol 
+      CALL dbcsr_add(m_temp_oo_1,m_temp_oo_3,&
+         1.0_dp,2.0_dp*penalty_vol_prefactor)
 
       
          

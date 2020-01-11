@@ -205,6 +205,12 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword,__LOCATION__, name="VIRTUAL_NLMOS", &
+                          description="Turns on post-SCF construction of NLMOs", &
+                          usage="VIRTUAL_NLMOS .TRUE.", default_l_val=.FALSE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       !CALL keyword_create(keyword, __LOCATION__, name="DELOCALIZE_EPS_ITER",&
       !     description="Obsolete and to be deleted: use EPS_ERROR in XALMO_OPTIMIZER_PCG",&
       !     usage="DELOCALIZE_EPS_ITER 1.e-5", default_r_val=1.e-5_dp)
@@ -656,6 +662,10 @@ CONTAINS
                              description="Controls the PCG optimization of nonorthogonal localized MOs.", &
                              n_keywords=9, n_subsections=1, repeats=.FALSE.)
          optimizer_type = optimizer_pcg
+         NULLIFY (subsection)
+         CALL create_penalty_section(subsection)
+         CALL section_add_subsection(section, subsection)
+         CALL section_release(subsection)
       CASE (optimizer_xalmo_pcg)
          CALL section_create(section, __LOCATION__, name="XALMO_OPTIMIZER_PCG", &
                              description="Controls the PCG optimization of extended ALMOs.", &
@@ -757,11 +767,6 @@ CONTAINS
                                 usage="PRECOND_FILTER_THRESHOLD 0.1", default_r_val=0.5_dp)
             CALL section_add_keyword(section, keyword)
             CALL keyword_release(keyword)
-
-            NULLIFY (subsection)
-            CALL create_penalty_section(subsection)
-            CALL section_add_subsection(section, subsection)
-            CALL section_release(subsection)
 
          ENDIF
 
@@ -867,18 +872,6 @@ CONTAINS
       NULLIFY (keyword)
 
       CALL keyword_create( &
-         keyword, __LOCATION__, name="OCCUPIED_VOLUME_PENALTY_METHOD", &
-         description="Penalty that prevents nonorthogonal orbitals from becoming linear dependent.", &
-         usage="OCCUPIED_VOLUME_PENALTY_METHOD LNDET", &
-         default_i_val=penalty_type_none, &
-         enum_c_vals=s2a("NONE", "LNDET"), &
-         enum_desc=s2a("Do not use penalty.", &
-                       "Use -coeff*ln(det(MO-overlap)) term."), &
-         enum_i_vals=(/penalty_type_none, penalty_type_lndet/))
-      CALL section_add_keyword(section, keyword)
-      CALL keyword_release(keyword)
-
-      CALL keyword_create( &
          keyword, __LOCATION__, name="OPERATOR", &
          description="Type of opertator which defines the spread functional", &
          usage="OPERATOR PIPEK", &
@@ -888,21 +881,21 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
-      CALL keyword_create(keyword, __LOCATION__, name="OCCUPIED_VOLUME_PENALTY_COEFF", &
+      CALL keyword_create(keyword, __LOCATION__, name="PENALTY_STRENGTH", &
          description="Adjust the decrease speed of volume penalty coefficient cp in each step.", &
-         usage="VOLUME_PENALTY_COEFF_DECREASE_FACTOR 1.1", default_r_val=1.1_dp)
+         usage="PENALTY_STRENGTH 1.1", default_r_val=1.1_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
-      CALL keyword_create(keyword, __LOCATION__, name="VOLUME_PENALTY_COEFF_DECREASE_FACTOR", &
+      CALL keyword_create(keyword, __LOCATION__, name="PENALTY_STRENGTH_DECREASE_FACTOR", &
          description="Adjust the decrease speed of volume penalty coefficient cp in each step.", &
-         usage="VOLUME_PENALTY_COEFF_DECREASE_FACTOR 1.1", default_r_val=1.1_dp)
+         usage="PENALTY_STRENGTH_DECREASE_FACTOR 1.1", default_r_val=1.1_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
-      CALL keyword_create(keyword, __LOCATION__, name="DETERMINANT_ERROR", &
+      CALL keyword_create(keyword, __LOCATION__, name="DETERMINANT_TOLERANCE", &
          description="The minimum determinnat error we accepted to stop optimization.", &
-         usage="DETERMINANT_ERROR 1.0E-4", default_r_val=1.0E-3_dp)
+         usage="DETERMINANT_TOLERANCE 1.0E-4", default_r_val=1.0E-3_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -912,27 +905,9 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
-      CALL keyword_create( &
-         keyword, __LOCATION__, name="OCCUPIED_LOCALIZATION_PENALTY_METHOD", &
-         description="Penalty that localize orbitals.", &
-         usage="OCCUPIED_LOCALIZATION_PENALTY_METHOD NLMO", &
-         default_i_val=penalty_type_none, &
-         enum_c_vals=s2a("NONE", "NLMO"), &
-         enum_desc=s2a("Do not use penalty.", &
-                       "Use the NLMO penalty function."), &
-         enum_i_vals=(/penalty_type_none, penalty_type_nlmo/))
-      CALL section_add_keyword(section, keyword)
-      CALL keyword_release(keyword)
-
-      CALL keyword_create(keyword, __LOCATION__, name="LOCALIZATION_PENALTY_COEFF", &
-         description="Multiplication factor that determines the strength of the localization penalty.", &
-         usage="LOCALIZATION_PENALTY_COEFF 0.001", default_r_val=0.0_dp)
-      CALL section_add_keyword(section, keyword)
-      CALL keyword_release(keyword)
-
-      CALL keyword_create(keyword, __LOCATION__, name="ENERGY_COEFF", &
-         description="Contribution of energy into the objective function.", &
-         usage="ENERGY_COEFF 0.0", default_r_val=1.0_dp)
+      CALL keyword_create(keyword, __LOCATION__, name="COMPACTIFICATION_FILTER_START", &
+         description="The eps filter to perform the nlmo_compactification .", &
+         usage="COMPACTIFICATION_FILTER_START 1.e-6", default_r_val=1.e-7_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
