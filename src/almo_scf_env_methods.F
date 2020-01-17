@@ -154,8 +154,6 @@ CONTAINS
                                 l_val=almo_scf_env%return_orthogonalized_mos)
       CALL section_vals_val_get(almo_scf_section, "CONSTRUCT_NLMOS", &
                                 l_val=almo_scf_env%construct_nlmos)
-      CALL section_vals_val_get(almo_scf_section, "VIRTUAL_NLMOS", &
-                                l_val=almo_scf_env%virtual_nlmos)
 
 
       CALL section_vals_val_get(matrix_iterate_section, "EPS_LANCZOS", &
@@ -258,6 +256,9 @@ CONTAINS
       CALL section_vals_val_get(penalty_section, &
                                 "COMPACTIFICATION_FILTER_START", &
                                 r_val=almo_scf_env%opt_nlmo_pcg%opt_penalty%compactification_filter_start)
+      CALL section_vals_val_get(penalty_section, &
+                                "VIRTUAL_NLMOS", &
+                                l_val=almo_scf_env%opt_nlmo_pcg%opt_penalty%virtual_nlmos)
 
       CALL section_vals_val_get(xalmo_opt_newton_pcg_section, "EPS_ERROR", &
                                 r_val=almo_scf_env%opt_xalmo_newton_pcg_solver%eps_error)

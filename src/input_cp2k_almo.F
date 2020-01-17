@@ -205,12 +205,6 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
-      CALL keyword_create(keyword,__LOCATION__, name="VIRTUAL_NLMOS", &
-                          description="Turns on post-SCF construction of NLMOs", &
-                          usage="VIRTUAL_NLMOS .TRUE.", default_l_val=.FALSE.)
-      CALL section_add_keyword(section, keyword)
-      CALL keyword_release(keyword)
-
       !CALL keyword_create(keyword, __LOCATION__, name="DELOCALIZE_EPS_ITER",&
       !     description="Obsolete and to be deleted: use EPS_ERROR in XALMO_OPTIMIZER_PCG",&
       !     usage="DELOCALIZE_EPS_ITER 1.e-5", default_r_val=1.e-5_dp)
@@ -882,19 +876,19 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="PENALTY_STRENGTH", &
-         description="Adjust the decrease speed of volume penalty coefficient cp in each step.", &
+         description="Strength of the orthogonalization penalty", &
          usage="PENALTY_STRENGTH 1.1", default_r_val=1.1_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="PENALTY_STRENGTH_DECREASE_FACTOR", &
-         description="Adjust the decrease speed of volume penalty coefficient cp in each step.", &
+         description="Factor that decreases the strength of the orthogonalization penalty.", &
          usage="PENALTY_STRENGTH_DECREASE_FACTOR 1.1", default_r_val=1.1_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="DETERMINANT_TOLERANCE", &
-         description="The minimum determinnat error we accepted to stop optimization.", &
+         description="Stop the optimization of the penalty strength if the determinant of the overlap changes less than this tolerance threshold.", &
          usage="DETERMINANT_TOLERANCE 1.0E-4", default_r_val=1.0E-3_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -906,10 +900,17 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="COMPACTIFICATION_FILTER_START", &
-         description="The eps filter to perform the nlmo_compactification .", &
+         description="Set orbital coefficients with absolute value smaller than this value to zero.", &
          usage="COMPACTIFICATION_FILTER_START 1.e-6", default_r_val=1.e-7_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword,__LOCATION__, name="VIRTUAL_NLMOS", &
+                          description="Localize virtual oribtals", &
+                          usage="VIRTUAL_NLMOS .TRUE.", default_l_val=.FALSE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
 
    END SUBROUTINE create_penalty_section
 

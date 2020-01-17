@@ -49,6 +49,7 @@ MODULE almo_scf_types
                             determinant_tolerance, penalty_strength_dec_factor, &
                             compactification_filter_start
       INTEGER            :: operator_type
+      LOGICAL            :: virtual_nlmos 
 
    END TYPE penalty_type
 
@@ -219,8 +220,7 @@ MODULE almo_scf_types
       LOGICAL              :: s_sqrt_done
       REAL(KIND=dp)        :: almo_scf_energy
       LOGICAL              :: orthogonal_basis, fixed_mu
-      LOGICAL              :: return_orthogonalized_mos, construct_nlmos, &
-                              virtual_nlmos
+      LOGICAL              :: return_orthogonalized_mos, construct_nlmos
 
       !! Smearing control
       !! smear flag allow to retrieve eigenvalues in almo_scf with diag algorithm and create occupation-scaled ALMO orbitals

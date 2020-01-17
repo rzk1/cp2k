@@ -1643,7 +1643,7 @@ CONTAINS
 
          CALL construct_nlmos_wrapper(qs_env, almo_scf_env, virtuals=.FALSE.)
 
-         IF (almo_scf_env%virtual_nlmos) THEN
+         IF (almo_scf_env%opt_nlmo_pcg%opt_penalty%virtual_nlmos) THEN
            CALL construct_virtuals(almo_scf_env)
            CALL construct_nlmos_wrapper(qs_env, almo_scf_env, virtuals=.TRUE.)
          ENDIF
@@ -1720,28 +1720,6 @@ CONTAINS
             prev_determinant = almo_scf_env%overlap_determinant
 
          ENDDO
-         !KEEP:   IF (iteration_number.eq.1) THEN
-         !KEEP:       IF (initial_vol_coeff .gt. almo_scf_env%opt_nlmo_pcg%opt_penalty%occ_vol_coeff ) THEN
-         !KEEP:           occ_vol_saved = almo_scf_env%opt_nlmo_pcg%opt_penalty%occ_vol_coeff
-         !KEEP:       ELSE
-         !KEEP:           occ_vol_saved = initial_vol_coeff
-         !KEEP:       ENDIF
-         !KEEP:   ELSE
-         !KEEP:       nlmo_loc_gradient = (prev_loc - almo_scf_env%opt_nlmo_pcg%opt_penalty%loc_function) &
-         !KEEP:                           / (pre_occ_vol - occ_vol_saved)
-
-         !KEEP:       IF (almo_scf_env%overlap_determinant .gt. almo_scf_env%opt_nlmo_pcg%opt_penalty%final_determinant &
-         !KEEP:           .OR. nlmo_loc_gradient .gt. almo_scf_env%opt_nlmo_pcg%opt_penalty%min_gradient) THEN
-         !KEEP:           occ_vol_saved = occ_vol_saved / 2.0_dp
-         !KEEP:           almo_scf_env%opt_nlmo_pcg%opt_penalty%occ_vol_coeff = occ_vol_saved
-         !KEEP:       ELSE
-         !KEEP:          EXIT !loop_over_vol_strength
-         !KEEP:       ENDIF
-         !KEEP:   ENDIF
-         !KEEP:
-         !KEEP:   prev_loc = almo_scf_env%opt_nlmo_pcg%opt_penalty%loc_function
-         !KEEP:   pre_occ_vol = almo_scf_env%opt_nlmo_pcg%opt_penalty%occ_vol_coeff
-         !KEEP:ENDDO
 
    END SUBROUTINE construct_nlmos_wrapper
 
