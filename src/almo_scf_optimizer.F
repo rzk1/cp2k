@@ -3127,9 +3127,9 @@ CONTAINS
                   objf_new, objf_diff, grad_norm, &
                   t2-t1 
                WRITE(unit_nr,'(T2,A19,F23.10)') &
-                       "Localization component:", localization_obj_function
+                       "Localization:", localization_obj_function
                WRITE(unit_nr,'(T2,A19,F23.10)') &
-                       "Orthogonalization penalty:", penalty_func_new
+                       "Orthogonalization:", penalty_func_new
             ENDIF
 
 
@@ -3163,17 +3163,32 @@ CONTAINS
       ENDDO
       optimizer%opt_penalty%penalty_strength = optimizer%opt_penalty%penalty_strength / nspins
 
-      IF (unit_nr > 0) THEN
-         WRITE(unit_nr,'()')
-         WRITE(unit_nr,'(T2,A19,F23.10)') &
-                 "FINAL LOCALIZATION:", localization_obj_function
-         WRITE(unit_nr,'()')
-         WRITE(unit_nr,'(T2,A19,F23.10)') &
-                 "FINAL DETERMINANT:", overlap_determinant
+      IF (converged) THEN
+         IF (unit_nr > 0) THEN
+            WRITE(unit_nr,'()')
+            WRITE(unit_nr,'(T2,A19,F23.10)') &
+                    "Final localization:", localization_obj_function
+            WRITE(unit_nr,'()')
+            WRITE(unit_nr,'(T2,A19,F23.10)') &
+                    "Final determinant:", overlap_determinant
 
-         WRITE(unit_nr,'()')
-         WRITE(unit_nr,'(T2,A19,F23.10)') &
-                 "Penalty strength:", optimizer%opt_penalty%penalty_strength
+            WRITE(unit_nr,'()')
+            WRITE(unit_nr,'(T2,A19,F23.10)') &
+                    "Final Penalty strength:", optimizer%opt_penalty%penalty_strength
+         ENDIF
+      ELSE
+         IF (unit_nr > 0) THEN
+            WRITE(unit_nr,'()')
+            WRITE(unit_nr,'(T2,A19,F23.10)') &
+                    "Localization:", localization_obj_function
+            WRITE(unit_nr,'()')
+            WRITE(unit_nr,'(T2,A19,F23.10)') &
+                    "Determinant:", overlap_determinant
+
+            WRITE(unit_nr,'()')
+            WRITE(unit_nr,'(T2,A19,F23.10)') &
+                    "Penalty strength:", optimizer%opt_penalty%penalty_strength
+         ENDIF
       ENDIF
 
       ! clean up

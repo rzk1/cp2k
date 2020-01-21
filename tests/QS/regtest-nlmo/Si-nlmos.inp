@@ -18,14 +18,8 @@
 
     &QS
       ALMO_SCF T
-      EPS_DEFAULT 1.0E-09
+      EPS_DEFAULT 1.0E-08
     &END QS
-
-    &PRINT
-      &MO_CUBES LOW
-        NHOMO -1
-      &END
-    &END PRINT
 
     &ALMO_SCF
 
@@ -39,7 +33,7 @@
 
       &XALMO_OPTIMIZER_PCG
         MAX_ITER                 50
-        EPS_ERROR                1.0E-5
+        EPS_ERROR                1.0E-3
         CONJUGATOR               HESTENES_STIEFEL
         PRECONDITIONER           DEFAULT
         LIN_SEARCH_EPS_ERROR     0.1
@@ -49,22 +43,20 @@
 
       &NLMO_OPTIMIZER_PCG
         MAX_ITER                 2000
-        EPS_ERROR                1.0E-4 ! 1.0E-6
+        EPS_ERROR                0.1
         CONJUGATOR               ZERO
         PRECONDITIONER           DEFAULT
         LIN_SEARCH_EPS_ERROR     0.1
         LIN_SEARCH_STEP_SIZE_GUESS 0.001
         MAX_ITER_OUTER_LOOP      0
-        &PENALTY ! RZK-warning: simplify names (-PENALTY in kewords, -OCCUPIED)
-          OCCUPIED_LOCALIZATION_PENALTY_METHOD  NLMO    ! default NONE
-          LOCALIZATION_PENALTY_COEFF            1.0     ! default 0.0
-          OPERATOR                              BERRY   ! BOYS ! PIPEK
-          FINAL_DETERMINANT                     0.5     ! default 0.1
-          DETERMINANT_ERROR                     1.0E-4  ! default 0.001
-          OCCUPIED_VOLUME_PENALTY_METHOD        LNDET   ! LNDET ! NONE
-          OCCUPIED_VOLUME_PENALTY_COEFF         0.1     ! default 1.1
-          VOLUME_PENALTY_COEFF_DECREASE_FACTOR  1.5     ! default 1.1
-          ENERGY_COEFF                          0.0     ! default 1.0
+        &PENALTY
+          OPERATOR                          PIPEK
+          PENALTY_STRENGTH                  0.01
+          DETERMINANT_TOLERANCE             1.0E-8
+          PENALTY_STRENGTH_DECREASE_FACTOR  2.0
+          FINAL_DETERMINANT                 0.6
+          COMPACTIFICATION_FILTER_START     1.0E-3
+          VIRTUAL_NLMOS                     FALSE
         &END PENALTY
       &END NLMO_OPTIMIZER_PCG
 
