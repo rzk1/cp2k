@@ -17,14 +17,6 @@
       EPS_DEFAULT 1.0E-8
     &END QS
 
-    !&LOCALIZE
-    !  METHOD NONE
-    !  &PRINT
-    !    &WANNIER_CUBES
-    !    &END
-    !  &END
-    !&END
-
     &ALMO_SCF
 
       EPS_FILTER                 1.0E-09
