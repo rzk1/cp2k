@@ -2003,6 +2003,7 @@ CONTAINS
       eps_local = MAX(eps_start, 10E-14_dp)
 
       DO
+
          IF (eps_local > 0.11_dp) EXIT
 
          DO ispin = 1, nspins
