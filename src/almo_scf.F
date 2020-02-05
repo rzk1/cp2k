@@ -1687,6 +1687,12 @@ CONTAINS
 
       INTEGER                                            :: ispin
 
+      ! RZK-warning: this is NLMO todo list
+      ! * there should be a test that shows how to print NLMO cube files
+      ! * each code feature must be tested only once. all keywords options must be demonstrated (for example, there is no file that
+      ! does virtual localization)
+      ! * minus sign in lfbgs is empirically derived, check equations/code
+
       IF (almo_scf_env%construct_nlmos) THEN
 
          DO ispin = 1, almo_scf_env%nspins
