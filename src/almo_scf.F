@@ -11,6 +11,10 @@
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
 MODULE almo_scf
+   USE nlmo_types,                      ONLY: nlmo_env_type, &
+                                              nlmo_env_init, &
+                                              nlmo_env_release, &
+                                              nlmo_env_compute_BK_ij
    USE almo_scf_methods,                ONLY: almo_scf_p_blk_to_t_blk,&
                                               almo_scf_t_rescaling,&
                                               almo_scf_t_to_proj,&
@@ -1690,6 +1694,7 @@ CONTAINS
       ! * each code feature must be tested only once. all keywords options must be demonstrated (for example, there is no file that
       ! does virtual localization)
       ! * minus sign in lfbgs is empirically derived, check equations/code
+      ! * why localization operator is specified in the penalty section and stored in the penalty part of the optimizer?
 
       IF (almo_scf_env%construct_nlmos) THEN
 
@@ -1741,6 +1746,15 @@ CONTAINS
          routineP = moduleN//':'//routineN
 
       REAL(KIND=dp)                                      :: det_diff, prev_determinant
+      TYPE(nlmo_env_type)                                :: nlmo_env
+
+      ! compute and store MO-indepedent data
+      CALL nlmo_env_init(nlmo_env = nlmo_env, &
+                         qs_env = qs_env, &
+                         loc_operator = almo_scf_env%opt_nlmo_pcg%opt_penalty%operator_type, &
+                         m_templateNN = almo_scf_env%matrix_s(1), &
+                         distr_type_AOs = almo_scf_env%mat_distr_aos, &
+                         eps_filter = almo_scf_env%eps_filter)
 
       almo_scf_env%overlap_determinant = 1.0
       ! KEEP: initial_vol_coeff = almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength
@@ -1753,24 +1767,24 @@ CONTAINS
 
          IF (.NOT. virtuals) THEN
             CALL almo_scf_construct_nlmos(qs_env=qs_env, &
+                                          nlmo_env=nlmo_env, &
                                           optimizer=almo_scf_env%opt_nlmo_pcg, &
                                           matrix_s=almo_scf_env%matrix_s(1), &
                                           matrix_mo_in=almo_scf_env%matrix_t, &
                                           matrix_mo_out=almo_scf_env%matrix_t, &
                                           template_matrix_sigma=almo_scf_env%matrix_sigma_inv, &
                                           overlap_determinant=almo_scf_env%overlap_determinant, &
-                                          mat_distr_aos=almo_scf_env%mat_distr_aos, &
                                           virtuals=virtuals, &
                                           eps_filter=almo_scf_env%eps_filter)
          ELSE
             CALL almo_scf_construct_nlmos(qs_env=qs_env, &
+                                          nlmo_env=nlmo_env, &
                                           optimizer=almo_scf_env%opt_nlmo_pcg, &
                                           matrix_s=almo_scf_env%matrix_s(1), &
                                           matrix_mo_in=almo_scf_env%matrix_v, &
                                           matrix_mo_out=almo_scf_env%matrix_v, &
                                           template_matrix_sigma=almo_scf_env%matrix_sigma_vv, &
                                           overlap_determinant=almo_scf_env%overlap_determinant, &
-                                          mat_distr_aos=almo_scf_env%mat_distr_aos, &
                                           virtuals=virtuals, &
                                           eps_filter=almo_scf_env%eps_filter)
 
@@ -1787,6 +1801,8 @@ CONTAINS
          prev_determinant = almo_scf_env%overlap_determinant
 
       ENDDO
+
+      CALL nlmo_env_release(nlmo_env)
 
    END SUBROUTINE construct_nlmos_wrapper
 
