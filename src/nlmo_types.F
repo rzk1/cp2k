@@ -10,44 +10,27 @@
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
 MODULE nlmo_types
-   USE almo_scf_qs,                     ONLY: almo_dm_to_almo_ks,&
-                                              almo_dm_to_qs_env,&
-                                              almo_scf_update_ks_energy,&
-                                              matrix_qs_to_almo
+   USE almo_scf_qs,                     ONLY: matrix_qs_to_almo
    USE cell_types,                      ONLY: cell_type
-   USE dbcsr_api,                       ONLY: &
-        dbcsr_add, dbcsr_add_on_diag, dbcsr_copy, dbcsr_create, dbcsr_desymmetrize, &
-        dbcsr_distribution_get, dbcsr_distribution_type, dbcsr_dot, dbcsr_filter, dbcsr_finalize, &
-        dbcsr_frobenius_norm, dbcsr_func_dtanh, dbcsr_func_inverse, dbcsr_func_tanh, &
-        dbcsr_function_of_elements, dbcsr_get_block_p, dbcsr_get_diag, dbcsr_get_info, &
-        dbcsr_hadamard_product, dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, &
-        dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, &
-        dbcsr_nblkcols_total, dbcsr_nblkrows_total, dbcsr_norm, dbcsr_norm_maxabsnorm, &
-        dbcsr_p_type, dbcsr_print_block_sum, dbcsr_release, dbcsr_reserve_block2d, dbcsr_scale, &
-        dbcsr_set, dbcsr_set_diag, dbcsr_triu, dbcsr_type, dbcsr_type_no_symmetry, &
-        dbcsr_work_create, dbcsr_print
-   USE input_constants,                 ONLY: &
-        almo_scf_diag, almo_scf_dm_sign, cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, &
-        cg_hager_zhang, cg_hestenes_stiefel, cg_liu_storey, cg_polak_ribiere, cg_zero, &
-        op_loc_berry, op_loc_pipek, trustr_cauchy, trustr_dogleg, virt_full, &
-        xalmo_case_block_diag, xalmo_case_fully_deloc, xalmo_case_normal, xalmo_prec_domain, &
-        xalmo_prec_full, xalmo_prec_zero
-   USE iterate_matrix,                  ONLY: determinant,&
-                                              invert_Hotelling,&
-                                              matrix_sqrt_Newton_Schulz
+   USE cp_log_handling,                 ONLY: cp_to_string
+   USE dbcsr_api,                       ONLY: dbcsr_copy,&
+                                              dbcsr_create,&
+                                              dbcsr_multiply,&
+                                              dbcsr_p_type,&
+                                              dbcsr_release,&
+                                              dbcsr_set,&
+                                              dbcsr_type,&
+                                              dbcsr_type_no_symmetry
+   USE input_constants,                 ONLY: op_loc_berry,&
+                                              op_loc_pipek
    USE kinds,                           ONLY: dp
    USE particle_methods,                ONLY: get_particle_set
    USE particle_types,                  ONLY: particle_type
-   USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_loc_utils,                    ONLY: compute_berry_operator
    USE qs_localization_methods,         ONLY: initialize_weights
-   USE cp_log_handling,                 ONLY: cp_get_default_logger,&
-                                              cp_logger_get_default_unit_nr,&
-                                              cp_logger_type,&
-                                              cp_to_string
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -76,12 +59,18 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Initialize MO-independent localization data
+!> \param nlmo_env ...
+!> \param qs_env ...
+!> \param loc_operator ...
+!> \param m_templateNN ...
+!> \param distr_type_AOs ...
+!> \param eps_filter ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
    SUBROUTINE nlmo_env_init(nlmo_env, qs_env, loc_operator, m_templateNN, &
-      distr_type_AOs, eps_filter)
+                            distr_type_AOs, eps_filter)
 
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
       TYPE(qs_environment_type), POINTER                 :: qs_env
@@ -90,8 +79,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: distr_type_AOs
       REAL(KIND=dp), INTENT(IN)                          :: eps_filter
 
-      INTEGER                                            :: dim_op, idim0, &
-                                                            reim
+      INTEGER                                            :: dim_op, idim0, reim
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: qs_matrix_s
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: op_sm_set_qs
@@ -140,10 +128,10 @@ CONTAINS
 
                ALLOCATE (nlmo_env%op_sm_set(reim, idim0)%matrix)
                CALL dbcsr_copy(nlmo_env%op_sm_set(reim, idim0)%matrix, &
-                             m_templateNN, &
-                             name="NLMO_"// &
-                             TRIM(ADJUSTL(cp_to_string(reim)))//"-"// &
-                             TRIM(ADJUSTL(cp_to_string(idim0))))
+                               m_templateNN, &
+                               name="NLMO_"// &
+                               TRIM(ADJUSTL(cp_to_string(reim)))//"-"// &
+                               TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(nlmo_env%op_sm_set(reim, idim0)%matrix, 0.0_dp)
 
             ENDDO
@@ -174,7 +162,7 @@ CONTAINS
 
       CASE DEFAULT
 
-        CPABORT("Illegal localization operator")
+         CPABORT("Illegal localization operator")
 
       END SELECT
 
@@ -183,6 +171,11 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Initialize data that depends only on the initial MOs
 !>        The key stored components are: Occ x Occ BK matrix, K-weights
+!> \param nlmo_env ...
+!> \param qs_env ...
+!> \param m_mo0 ...
+!> \param m_metricNN ...
+!> \param m_templateOO ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -191,20 +184,16 @@ CONTAINS
 
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
       TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_mo0
       TYPE(dbcsr_type), INTENT(IN)                       :: m_metricNN
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_mo0, &
-                                                            m_templateOO
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_templateOO
 
-      INTEGER                                            :: dim_op, idim0, &
-                                                            reim, ispin, &
-                                                            nspins, dim_reim, &
-                                                            natoms, iatom, &
-                                                            isgf, ncol
+      INTEGER                                            :: dim_op, dim_reim, iatom, idim0, isgf, &
+                                                            ispin, natoms, ncol, nspins, reim
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: first_sgf, last_sgf, nsgf
+      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: tempNOcc1
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
-      TYPE(dbcsr_type), DIMENSION(:), ALLOCATABLE        :: tempNOcc1
-      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: first_sgf, &
-                                                            last_sgf, nsgf
 
       nspins = SIZE(m_mo0)
       dim_reim = -1
@@ -320,7 +309,7 @@ CONTAINS
 
       ENDDO ! ispin
 
-      DEALLOCATE(tempNOcc1)
+      DEALLOCATE (tempNOcc1)
 
       DEALLOCATE (first_sgf)
       DEALLOCATE (last_sgf)
@@ -330,6 +319,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Optimization of NLMOs using PCG minimizers
+!> \param nlmo_env ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -338,8 +328,8 @@ CONTAINS
 
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
 
-      INTEGER                                            :: idim0, &
-                                                            reim, ispin
+      INTEGER                                            :: idim0, ispin, reim
+
       DO idim0 = 1, SIZE(nlmo_env%m_B0, 2)
          DO reim = 1, SIZE(nlmo_env%m_B0, 1)
 

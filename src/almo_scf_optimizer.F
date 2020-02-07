@@ -11,10 +11,6 @@
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
 MODULE almo_scf_optimizer
-   USE nlmo_types,                      ONLY: nlmo_env_type, &
-                                              nlmo_env_init, &
-                                              nlmo_env_release, &
-                                              nlmo_env_compute_BK_ij
    USE almo_scf_diis_types,             ONLY: almo_scf_diis_extrapolate,&
                                               almo_scf_diis_init,&
                                               almo_scf_diis_push,&
@@ -84,9 +80,8 @@ MODULE almo_scf_optimizer
    USE input_constants,                 ONLY: &
         almo_scf_diag, almo_scf_dm_sign, cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, &
         cg_hager_zhang, cg_hestenes_stiefel, cg_liu_storey, cg_polak_ribiere, cg_zero, &
-        op_loc_berry, op_loc_pipek, trustr_cauchy, trustr_dogleg, virt_full, &
-        xalmo_case_block_diag, xalmo_case_fully_deloc, xalmo_case_normal, xalmo_prec_domain, &
-        xalmo_prec_full, xalmo_prec_zero
+        trustr_cauchy, trustr_dogleg, virt_full, xalmo_case_block_diag, xalmo_case_fully_deloc, &
+        xalmo_case_normal, xalmo_prec_domain, xalmo_prec_full, xalmo_prec_zero
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
    USE iterate_matrix,                  ONLY: determinant,&
@@ -96,12 +91,11 @@ MODULE almo_scf_optimizer
    USE machine,                         ONLY: m_flush,&
                                               m_walltime
    USE message_passing,                 ONLY: mp_sum
-   USE particle_methods,                ONLY: get_particle_set
-   USE particle_types,                  ONLY: particle_type
+   USE nlmo_types,                      ONLY: nlmo_env_compute_BK_ij,&
+                                              nlmo_env_type
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
-   USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_loc_utils,                    ONLY: compute_berry_operator
    USE qs_localization_methods,         ONLY: initialize_weights
 #include "./base/base_uses.f90"
@@ -1991,13 +1985,13 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Optimization of NLMOs using PCG minimizers
 !> \param qs_env ...
+!> \param nlmo_env ...
 !> \param optimizer   controls the optimization algorithm
 !> \param matrix_s - AO overlap (NAOs x NAOs)
 !> \param matrix_mo_in - initial MOs (NAOs x NMOs)
 !> \param matrix_mo_out - final MOs (NAOs x NMOs)
 !> \param template_matrix_sigma - template (NMOs x NMOs)
 !> \param overlap_determinant - the determinant of the MOs overlap
-!> \param mat_distr_aos - info on the distribution of AOs
 !> \param virtuals ...
 !> \param eps_filter ...
 !> \par History
@@ -2024,18 +2018,17 @@ CONTAINS
          routineP = moduleN//':'//routineN
 
       CHARACTER(LEN=30)                                  :: iter_type, print_string
-      INTEGER :: cg_iteration, dim_op, handle, iatom, idim0, isgf, ispin, iteration, &
-         line_search_iteration, linear_search_type, max_iter, natom, ncol, nspins, &
-         outer_iteration, outer_max_iter, para_group, prec_type, reim, unit_nr
+      INTEGER :: cg_iteration, handle, ispin, iteration, line_search_iteration, &
+         linear_search_type, max_iter, nspins, outer_iteration, outer_max_iter, para_group, &
+         prec_type, unit_nr
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: nocc
       LOGICAL                                            :: converged, d_bfgs, just_started, l_bfgs, &
                                                             line_search, outer_prepare_to_exit, &
                                                             prepare_to_exit, reset_conjugator
       REAL(KIND=dp) :: appr_sec_der, beta, bfgs_rho, bfgs_sum, denom, denom2, e0, e1, g0, g0sign, &
          g1, g1sign, grad_norm, line_search_error, localization_obj_function, &
-         localization_obj_function_ispin, next_step_size_guess, obj_function_ispin, objf_diff, &
-         objf_new, objf_old, penalty_amplitude, penalty_func_ispin, penalty_func_new, spin_factor, &
-         step_size, t1, t2, tempreal
+         next_step_size_guess, obj_function_ispin, objf_diff, objf_new, objf_old, &
+         penalty_amplitude, penalty_func_new, spin_factor, step_size, t1, t2, tempreal
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diagonal, grad_norm_spin, &
                                                             penalty_vol_prefactor, &
                                                             suggested_vol_penalty
@@ -2045,8 +2038,6 @@ CONTAINS
          prev_grad, prev_m_theta, prev_minus_prec_grad, prev_step, step, tempNOcc1, tempOccOcc1, &
          tempOccOcc2, tempOccOcc3
       TYPE(lbfgs_history_type)                           :: nlmo_lbfgs_history
-      TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
-      TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
       CALL timeset(routineN, handle)
 
@@ -2224,11 +2215,11 @@ CONTAINS
       ENDDO ! ispin
 
       ! use initial orbitals to compute the BK matrix
-      CALL nlmo_env_compute_BK_ij(nlmo_env = nlmo_env, &
-                                  qs_env = qs_env, &
-                                  m_mo0 = m_t_mo_local, &
-                                  m_metricNN = matrix_s, &
-                                  m_templateOO = m_S0)
+      CALL nlmo_env_compute_BK_ij(nlmo_env=nlmo_env, &
+                                  qs_env=qs_env, &
+                                  m_mo0=m_t_mo_local, &
+                                  m_metricNN=matrix_s, &
+                                  m_templateOO=m_S0)
 
       ! start the outer SCF loop
       outer_max_iter = optimizer%max_iter_outer_loop
@@ -2669,9 +2660,9 @@ CONTAINS
                      ! alternative method for finding step size
                      ! do not use quadratic approximation, only gradient signs
                      IF (g1sign .NE. g0sign) THEN
-                        step_size = -step_size/2.0;
+                        step_size = -step_size/2.0; 
                      ELSE
-                        step_size = step_size*1.5;
+                        step_size = step_size*1.5; 
                      ENDIF
                   ENDIF
                   ! end alternative LS types
@@ -6281,8 +6272,8 @@ CONTAINS
 
 ! *****************************************************************************
 !> \brief Compute the objective functional of NLMOs
-!> \param localization_obj_function_ispin ...
-!> \param penalty_func_ispin ...
+!> \param localization_function ...
+!> \param penalty_function ...
 !> \param penalty_vol_prefactor ...
 !> \param overlap_determinant ...
 !> \param m_sigma ...
@@ -6304,15 +6295,13 @@ CONTAINS
                                 m_theta_normalized, template_matrix_mo, weights, m_S0, just_started, &
                                 penalty_amplitude, eps_filter)
 
-      REAL(KIND=dp), INTENT(INOUT)                       :: localization_function, &
-                                                            penalty_function, &
-                                                            overlap_determinant
+      REAL(KIND=dp), INTENT(INOUT)                       :: localization_function, penalty_function
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: penalty_vol_prefactor
+      REAL(KIND=dp), INTENT(INOUT)                       :: overlap_determinant
       TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_sigma
       INTEGER, DIMENSION(:), INTENT(IN)                  :: nocc
       TYPE(dbcsr_type), DIMENSION(:, :, :), INTENT(IN)   :: m_B0
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_theta_normalized, &
-                                                            template_matrix_mo
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_theta_normalized, template_matrix_mo
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: weights
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_S0
       LOGICAL, INTENT(IN)                                :: just_started
@@ -6321,11 +6310,9 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'compute_obj_nlmos', &
          routineP = moduleN//':'//routineN
 
-      INTEGER                                            :: handle, idim0, &
-                                                            ielem, para_group, &
-                                                            reim, ispin, nspins
-      REAL(KIND=dp)                                      :: det1, fval, &
-                                                            local_function_ispin, &
+      INTEGER                                            :: handle, idim0, ielem, ispin, nspins, &
+                                                            para_group, reim
+      REAL(KIND=dp)                                      :: det1, fval, local_function_ispin, &
                                                             penal_function_ispin
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: reim_diag, z2
       TYPE(dbcsr_type)                                   :: tempOccOcc1, tempOccOcc2
@@ -6452,22 +6439,19 @@ CONTAINS
       TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_grad_out
       TYPE(dbcsr_type), DIMENSION(:, :, :), INTENT(IN)   :: m_B0
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: weights
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_S0, m_theta_normalized, &
-                                                            m_siginv, &
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_S0, m_theta_normalized, m_siginv, &
                                                             m_sig_sqrti_ii
-      REAL(KIND=dp), INTENT(IN)                          :: eps_filter
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: penalty_vol_prefactor
+      REAL(KIND=dp), INTENT(IN)                          :: eps_filter
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: suggested_vol_penalty
 
       CHARACTER(len=*), PARAMETER :: routineN = 'compute_gradient_nlmos', &
          routineP = moduleN//':'//routineN
 
-      INTEGER                                            :: dim0, handle, idim0, &
-                                                            reim, ispin, nspins
+      INTEGER                                            :: dim0, handle, idim0, ispin, nspins, reim
       REAL(KIND=dp)                                      :: norm_loc, norm_vol
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: tg_diagonal, z2
-      TYPE(dbcsr_type)                                   :: m_temp_oo_1, m_temp_oo_2, &
-                                                            m_temp_oo_3, &
+      TYPE(dbcsr_type)                                   :: m_temp_oo_1, m_temp_oo_2, m_temp_oo_3, &
                                                             m_temp_oo_4
 
       CALL timeset(routineN, handle)
@@ -9063,7 +9047,7 @@ CONTAINS
 !         CALL dbcsr_create(m_theta(ispin), &
 !                           template=template_matrix_sigma(ispin), &
 !                           matrix_type=dbcsr_type_no_symmetry)
-!         ! create initial guess for the main variable - identity matrix 
+!         ! create initial guess for the main variable - identity matrix
 !         CALL dbcsr_set(m_theta(ispin), 0.0_dp)
 !         CALL dbcsr_add_on_diag(m_theta(ispin), 1.0_dp)
 !      ENDDO
@@ -9129,7 +9113,7 @@ CONTAINS
 !
 !      ! penalty amplitude adjusts the strenght of volume conservation
 !      penalty_amplitude=optimizer%opt_penalty%penalty_strength
-!      !penalty_occ_vol = ( optimizer%opt_penalty%occ_vol_method .NE. penalty_type_none ) 
+!      !penalty_occ_vol = ( optimizer%opt_penalty%occ_vol_method .NE. penalty_type_none )
 !      !penalty_local = ( optimizer%opt_penalty%occ_loc_method .NE. penalty_type_none )
 !
 !      ! preconditioner control
@@ -9273,7 +9257,7 @@ CONTAINS
 !            ! compute m_B0=T0^t.B.T0
 !            DO idim0 = 1, SIZE(op_sm_set_qs, 2) ! this loop is over miller ind
 !
-!               DO reim = 1, SIZE(op_sm_set_qs, 1) ! this loop is over Re/Im 
+!               DO reim = 1, SIZE(op_sm_set_qs, 1) ! this loop is over Re/Im
 !
 !                  CALL matrix_qs_to_almo(op_sm_set_qs(reim, idim0)%matrix, op_sm_set_almo(reim, idim0)%matrix, &
 !                                         mat_distr_aos, .FALSE.)
