@@ -217,6 +217,12 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="CONSTRUCT_NLMOS", &
+                          description="Turns on post-SCF construction of NLMOs", &
+                          usage="CONSTRUCT_NLMOS .TRUE.", default_l_val=.FALSE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       !CALL keyword_create(keyword, __LOCATION__, name="DOMAIN_LAYOUT_MOS",&
       !     description="Each electron in the system is constrained to its own delocalization domain."//&
       !     " This keyword creates groups of electrons that share the same domain.",&
