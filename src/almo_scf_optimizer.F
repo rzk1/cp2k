@@ -1043,7 +1043,7 @@ CONTAINS
                              name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_almo(reim, idim0)%matrix, 0.0_dp)
             ENDDO
-         END DO
+         ENDDO
 
          CALL compute_berry_operator(qs_env, cell, op_sm_set_qs, dim_op)
 
@@ -1971,15 +1971,9 @@ CONTAINS
 
       DEALLOCATE (m_theta, m_t_in_local)
       IF (penalty_occ_local) THEN
-         DO idim0 = 1, dim_op
-            DO reim = 1, SIZE(op_sm_set_qs, 1)
-               DEALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
-               DEALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
-            ENDDO
-         END DO
-         DEALLOCATE (op_sm_set_qs)
-         DEALLOCATE (op_sm_set_almo)
-         DEALLOCATE(weights)
+         CALL dbcsr_deallocate_matrix_set(op_sm_set_qs)
+         CALL dbcsr_deallocate_matrix_set(op_sm_set_almo)
+         DEALLOCATE (weights)
       ENDIF
 
       IF (.NOT. converged .AND. .NOT. optimizer%early_stopping_on) THEN
@@ -2333,8 +2327,8 @@ CONTAINS
                                       0.0_dp, m_B0(reim, idim0, ispin), &
                                       filter_eps=eps_filter)
 
-                  DEALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
-                  DEALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
+                  !DEALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
+                  !DEALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
 
                ENDDO
 
@@ -2950,6 +2944,8 @@ CONTAINS
          CALL dbcsr_release(bfgs_y(ispin))
          CALL dbcsr_release(bfgs_s(ispin))
       ENDDO ! ispin
+
+
 
       DEALLOCATE (grad_norm_spin)
       DEALLOCATE (nocc)
