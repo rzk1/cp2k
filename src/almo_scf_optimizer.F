@@ -1038,8 +1038,8 @@ CONTAINS
                CALL dbcsr_copy(op_sm_set_qs(reim, idim0)%matrix, qs_matrix_s(1)%matrix, &
                              name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_qs(reim, idim0)%matrix, 0.0_dp)
-               CALL dbcsr_create(op_sm_set_almo(reim, idim0)%matrix, template=matrix_s)
-               CALL dbcsr_copy(op_sm_set_almo(reim, idim0)%matrix, matrix_s, &
+               CALL dbcsr_create(op_sm_set_almo(reim, idim0)%matrix, template=almo_scf_env%matrix_s(1))
+               CALL dbcsr_copy(op_sm_set_almo(reim, idim0)%matrix, almo_scf_env%matrix_s(1), &
                              name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_almo(reim, idim0)%matrix, 0.0_dp)
             ENDDO

@@ -43,7 +43,7 @@
 
       &NLMO_OPTIMIZER_PCG
         MAX_ITER                 2000
-        EPS_ERROR                0.1
+        EPS_ERROR                0.8
         CONJUGATOR               ZERO
         PRECONDITIONER           DEFAULT
         LIN_SEARCH_EPS_ERROR     0.5
@@ -51,12 +51,12 @@
         MAX_ITER_OUTER_LOOP      0
         &PENALTY
           OPERATOR                          BERRY
-          PENALTY_STRENGTH                  0.01
+          PENALTY_STRENGTH                  0.005
           DETERMINANT_TOLERANCE             1.0E-8
-          PENALTY_STRENGTH_DECREASE_FACTOR  2.0
-          FINAL_DETERMINANT                 0.6
+          PENALTY_STRENGTH_DECREASE_FACTOR  3.0
+          FINAL_DETERMINANT                 0.8
           COMPACTIFICATION_FILTER_START     1.0E-2
-          VIRTUAL_NLMOS                     FALSE
+          VIRTUAL_NLMOS                     TRUE
         &END PENALTY
       &END NLMO_OPTIMIZER_PCG
 
@@ -67,27 +67,29 @@
       &END XC_FUNCTIONAL
     &END XC
   &END DFT
-
   &SUBSYS
     &CELL
-      ABC 5.430710 5.430710 5.430710
+      ABC 12.0 6.0 6.0
     &END CELL
     &COORD
-      SCALED T
-      Si         0.000000      0.000000      0.000000
-      Si         0.000000      0.500000      0.500000
-      Si         0.500000      0.000000      0.500000
-      Si         0.500000      0.500000      0.000000
-      Si         0.250000      0.250000      0.250000
-      Si         0.250000      0.750000      0.750000
-      Si         0.750000      0.250000      0.750000
-      Si         0.750000      0.750000      0.250000
+    O   0.000000    0.000000   -0.065587 H2O
+    H   0.000000   -0.757136    0.520545 H2O
+    H   0.000000    0.757136    0.520545 H2O
+    O   4.000000    0.000000   -0.065587 H2O
+    H   4.000000   -0.757136    0.520545 H2O
+    H   4.000000    0.757136    0.520545 H2O
     &END COORD
-    &KIND Si
-      BASIS_SET SZV-GTH
-      POTENTIAL GTH-PBE-q4
+    &KIND H
+      BASIS_SET DZVP-GTH
+      POTENTIAL GTH-BLYP-q1
     &END KIND
+    &KIND O
+      BASIS_SET DZVP-GTH
+      POTENTIAL GTH-BLYP-q6
+    &END KIND
+    &TOPOLOGY
+      CONNECTIVITY GENERATE
+    &END TOPOLOGY
   &END SUBSYS
-
 &END FORCE_EVAL
 

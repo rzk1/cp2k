@@ -17,7 +17,6 @@ MODULE input_cp2k_almo
    USE input_constants,                 ONLY: &
         almo_deloc_none, almo_deloc_scf, almo_deloc_x, almo_deloc_x_then_scf, &
         almo_deloc_xalmo_1diag, almo_deloc_xalmo_scf, almo_deloc_xalmo_x, almo_frz_crystal, &
-<<<<<<< HEAD
         almo_frz_none, almo_scf_diag, almo_scf_pcg, almo_scf_skip, almo_scf_trustr, atomic_guess, &
         cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, cg_hager_zhang, cg_hestenes_stiefel, &
         cg_liu_storey, cg_polak_ribiere, cg_zero, molecular_guess, op_loc_berry, op_loc_pipek, &
@@ -25,16 +24,6 @@ MODULE input_cp2k_almo
         spd_inversion_dense_cholesky, spd_inversion_ls_hotelling, spd_inversion_ls_taylor, &
         trustr_cauchy, trustr_dogleg, trustr_steihaug, xalmo_prec_domain, xalmo_prec_full, &
         xalmo_prec_zero, xalmo_trial_r0_out, xalmo_trial_simplex
-=======
-        almo_frz_none, almo_scf_diag, &
-        almo_scf_pcg, almo_scf_skip, almo_scf_trustr, atomic_guess, cg_dai_yuan, cg_fletcher, &
-        cg_fletcher_reeves, cg_hager_zhang, cg_hestenes_stiefel, cg_liu_storey, cg_polak_ribiere, &
-        cg_zero, molecular_guess, optimizer_diis, optimizer_lin_eq_pcg, optimizer_pcg, &
-        optimizer_trustr, spd_inversion_dense_cholesky, spd_inversion_ls_hotelling, &
-        spd_inversion_ls_taylor, trustr_cauchy, trustr_dogleg, trustr_steihaug, xalmo_prec_domain, &
-        xalmo_prec_full, xalmo_prec_zero, xalmo_trial_r0_out, xalmo_trial_simplex, &
-        op_loc_berry, op_loc_pipek
->>>>>>> NLMO reimplemented, compiles and works for 2 test files
    USE input_keyword_types,             ONLY: keyword_create,&
                                               keyword_release,&
                                               keyword_type
@@ -223,12 +212,6 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword,__LOCATION__, name="CONSTRUCT_NLMOS", &
-                          description="Turns on post-SCF construction of NLMOs", &
-                          usage="CONSTRUCT_NLMOS .TRUE.", default_l_val=.FALSE.)
-      CALL section_add_keyword(section, keyword)
-      CALL keyword_release(keyword)
-
-      CALL keyword_create(keyword, __LOCATION__, name="CONSTRUCT_NLMOS", &
                           description="Turns on post-SCF construction of NLMOs", &
                           usage="CONSTRUCT_NLMOS .TRUE.", default_l_val=.FALSE.)
       CALL section_add_keyword(section, keyword)
@@ -623,11 +606,7 @@ CONTAINS
          CALL section_create(section, __LOCATION__, name="XALMO_OPTIMIZER_PCG", &
                              description="Controls the PCG optimization of extended ALMOs.", &
                              n_keywords=10, n_subsections=2, repeats=.FALSE.)
-<<<<<<< HEAD
          NULLIFY (subsection)
-=======
-         NULLIFY(subsection)
->>>>>>> NLMO reimplemented, compiles and works for 2 test files
          CALL create_optimizer_section(subsection, optimizer_newton_pcg_solver)
          CALL section_add_subsection(section, subsection)
          CALL section_release(subsection)

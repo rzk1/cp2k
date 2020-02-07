@@ -41,6 +41,8 @@
       &NLMO_OPTIMIZER_PCG
         MAX_ITER                 20000
         EPS_ERROR                0.2
+        !CONJUGATOR               HESTENES_STIEFEL
+        !PRECONDITIONER           NONE
         CONJUGATOR               ZERO
         PRECONDITIONER           DEFAULT
         LIN_SEARCH_EPS_ERROR     0.1
