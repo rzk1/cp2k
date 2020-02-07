@@ -100,6 +100,8 @@ MODULE almo_scf_optimizer
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_loc_utils,                    ONLY: compute_berry_operator
    USE qs_localization_methods,         ONLY: initialize_weights
+   USE cp_dbcsr_operations,             ONLY: dbcsr_allocate_matrix_set,&
+                                              dbcsr_deallocate_matrix_set
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -1022,23 +1024,24 @@ CONTAINS
 
          CALL initialize_weights(cell, weights)
 
-         ALLOCATE (op_sm_set_qs(2, dim_op))
-         ALLOCATE (op_sm_set_almo(2, dim_op))
-
+         NULLIFY (op_sm_set_qs)
+         CALL dbcsr_allocate_matrix_set(op_sm_set_qs, 2, dim_op)
+         NULLIFY (op_sm_set_almo)
+         CALL dbcsr_allocate_matrix_set(op_sm_set_almo, 2, dim_op)
          DO idim0 = 1, dim_op
             DO reim = 1, SIZE(op_sm_set_qs, 1)
-               NULLIFY (op_sm_set_qs(reim, idim0)%matrix)
                ALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
+               ALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
+               CALL dbcsr_create(op_sm_set_qs(reim, idim0)%matrix, template=qs_matrix_s(1)%matrix)
                CALL dbcsr_copy(op_sm_set_qs(reim, idim0)%matrix, qs_matrix_s(1)%matrix, &
                              name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_qs(reim, idim0)%matrix, 0.0_dp)
-               NULLIFY (op_sm_set_almo(reim, idim0)%matrix)
-               ALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
+               CALL dbcsr_create(op_sm_set_almo(reim, idim0)%matrix, template=almo_scf_env%matrix_s(1))
                CALL dbcsr_copy(op_sm_set_almo(reim, idim0)%matrix, almo_scf_env%matrix_s(1), &
                              name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_almo(reim, idim0)%matrix, 0.0_dp)
             ENDDO
-         END DO
+         ENDDO
 
          CALL compute_berry_operator(qs_env, cell, op_sm_set_qs, dim_op)
 
@@ -1966,14 +1969,8 @@ CONTAINS
 
       DEALLOCATE (m_theta, m_t_in_local)
       IF (penalty_occ_local) THEN
-         DO idim0 = 1, dim_op
-            DO reim = 1, SIZE(op_sm_set_qs, 1)
-               DEALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
-               DEALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
-            ENDDO
-         END DO
-         DEALLOCATE (op_sm_set_qs)
-         DEALLOCATE (op_sm_set_almo)
+         CALL dbcsr_deallocate_matrix_set(op_sm_set_qs)
+         CALL dbcsr_deallocate_matrix_set(op_sm_set_almo)
          DEALLOCATE (weights)
       ENDIF
 
@@ -2113,18 +2110,21 @@ CONTAINS
          ALLOCATE (weights(6))
          weights = 0.0_dp
          CALL initialize_weights(cell, weights)
-         ALLOCATE (op_sm_set_qs(2, dim_op))
-         ALLOCATE (op_sm_set_almo(2, dim_op))
+         NULLIFY (op_sm_set_qs)
+         CALL dbcsr_allocate_matrix_set(op_sm_set_qs, 2, dim_op)
+         NULLIFY (op_sm_set_almo)
+         CALL dbcsr_allocate_matrix_set(op_sm_set_almo, 2, dim_op)
          ! allocate space for T0^t.B.T0
          ALLOCATE (m_B0(2, dim_op, nspins))
          DO idim0 = 1, dim_op
             DO reim = 1, SIZE(op_sm_set_qs, 1)
-               NULLIFY (op_sm_set_qs(reim, idim0)%matrix, op_sm_set_almo(reim, idim0)%matrix)
                ALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
                ALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
+               CALL dbcsr_create(op_sm_set_qs(reim, idim0)%matrix, template=qs_matrix_s(1)%matrix)
                CALL dbcsr_copy(op_sm_set_qs(reim, idim0)%matrix, qs_matrix_s(1)%matrix, &
                              name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_qs(reim, idim0)%matrix, 0.0_dp)
+               CALL dbcsr_create(op_sm_set_almo(reim, idim0)%matrix, template=matrix_s)
                CALL dbcsr_copy(op_sm_set_almo(reim, idim0)%matrix, matrix_s, &
                              name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
                CALL dbcsr_set(op_sm_set_almo(reim, idim0)%matrix, 0.0_dp)
@@ -2323,8 +2323,8 @@ CONTAINS
                                       0.0_dp, m_B0(reim, idim0, ispin), &
                                       filter_eps=eps_filter)
 
-                  DEALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
-                  DEALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
+                  !DEALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
+                  !DEALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
 
                ENDDO
 
@@ -2371,13 +2371,8 @@ CONTAINS
       ENDDO ! ispin
 
       IF (optimizer%opt_penalty%operator_type .EQ. op_loc_berry) THEN
-         DO idim0 = 1, SIZE(op_sm_set_qs, 2) ! this loop is over miller ind
-            DO reim = 1, SIZE(op_sm_set_qs, 1) ! this loop is over Re/Im
-               DEALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
-               DEALLOCATE (op_sm_set_almo(reim, idim0)%matrix)
-            ENDDO
-         ENDDO
-         DEALLOCATE (op_sm_set_qs, op_sm_set_almo)
+          CALL dbcsr_deallocate_matrix_set(op_sm_set_qs)
+          CALL dbcsr_deallocate_matrix_set(op_sm_set_almo)
       ENDIF
 
       ! start the outer SCF loop
@@ -2951,6 +2946,8 @@ CONTAINS
          CALL dbcsr_release(bfgs_y(ispin))
          CALL dbcsr_release(bfgs_s(ispin))
       ENDDO ! ispin
+
+
 
       DEALLOCATE (grad_norm_spin)
       DEALLOCATE (nocc)
