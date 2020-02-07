@@ -11,10 +11,6 @@
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
 MODULE almo_scf
-   USE nlmo_types,                      ONLY: nlmo_env_type, &
-                                              nlmo_env_init, &
-                                              nlmo_env_release, &
-                                              nlmo_env_compute_BK_ij
    USE almo_scf_methods,                ONLY: almo_scf_p_blk_to_t_blk,&
                                               almo_scf_t_rescaling,&
                                               almo_scf_t_to_proj,&
@@ -87,6 +83,9 @@ MODULE almo_scf
                                               molecule_type
    USE mscfg_types,                     ONLY: get_matrix_from_submatrices,&
                                               molecular_scf_guess_env_type
+   USE nlmo_types,                      ONLY: nlmo_env_init,&
+                                              nlmo_env_release,&
+                                              nlmo_env_type
    USE particle_types,                  ONLY: particle_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
@@ -1749,12 +1748,12 @@ CONTAINS
       TYPE(nlmo_env_type)                                :: nlmo_env
 
       ! compute and store MO-indepedent data
-      CALL nlmo_env_init(nlmo_env = nlmo_env, &
-                         qs_env = qs_env, &
-                         loc_operator = almo_scf_env%opt_nlmo_pcg%opt_penalty%operator_type, &
-                         m_templateNN = almo_scf_env%matrix_s(1), &
-                         distr_type_AOs = almo_scf_env%mat_distr_aos, &
-                         eps_filter = almo_scf_env%eps_filter)
+      CALL nlmo_env_init(nlmo_env=nlmo_env, &
+                         qs_env=qs_env, &
+                         loc_operator=almo_scf_env%opt_nlmo_pcg%opt_penalty%operator_type, &
+                         m_templateNN=almo_scf_env%matrix_s(1), &
+                         distr_type_AOs=almo_scf_env%mat_distr_aos, &
+                         eps_filter=almo_scf_env%eps_filter)
 
       almo_scf_env%overlap_determinant = 1.0_dp ! RZK->ZL: why is this set?
       almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength = &
