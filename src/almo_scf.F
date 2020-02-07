@@ -1756,13 +1756,12 @@ CONTAINS
                          distr_type_AOs = almo_scf_env%mat_distr_aos, &
                          eps_filter = almo_scf_env%eps_filter)
 
-      almo_scf_env%overlap_determinant = 1.0
-      ! KEEP: initial_vol_coeff = almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength
+      almo_scf_env%overlap_determinant = 1.0_dp ! RZK->ZL: why is this set?
       almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength = &
-         -1.0_dp*almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength !NEW1
+         -1.0_dp*almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength
 
       ! loop over the strength of the orthogonalization penalty
-      prev_determinant = 10.0_dp
+      prev_determinant = 10.0_dp !RZK->ZL: why is this set?
       DO WHILE (almo_scf_env%overlap_determinant .GT. almo_scf_env%opt_nlmo_pcg%opt_penalty%final_determinant)
 
          IF (.NOT. virtuals) THEN
@@ -1787,7 +1786,6 @@ CONTAINS
                                           overlap_determinant=almo_scf_env%overlap_determinant, &
                                           virtuals=virtuals, &
                                           eps_filter=almo_scf_env%eps_filter)
-
          ENDIF
 
          det_diff = prev_determinant - almo_scf_env%overlap_determinant
