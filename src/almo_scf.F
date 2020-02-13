@@ -1746,8 +1746,35 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'construct_nlmos_wrapper', &
          routineP = moduleN//':'//routineN
 
-      REAL(KIND=dp)                                      :: det_diff, prev_determinant
+      CHARACTER(LEN=59)                                  :: print_string
+      INTEGER                                            :: unit_nr
+      REAL(KIND=dp)                                      :: det_diff, penalty_alpha, prev_determinant
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(nlmo_env_type)                                :: nlmo_env
+
+      ! get a useful output_unit
+      logger => cp_get_default_logger()
+      IF (logger%para_env%mepos == logger%para_env%source) THEN
+         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         unit_nr = -1
+      ENDIF
+
+      !create a print function
+      IF (unit_nr > 0) THEN
+         WRITE (unit_nr, *)
+         IF (.NOT. virtuals) THEN
+            WRITE (unit_nr, '(T2,A,A,A)') REPEAT("-", 24), &
+               " Optimization of occupied NLMOs ", REPEAT("-", 23)
+         ELSE
+            WRITE (unit_nr, '(T2,A,A,A)') REPEAT("-", 24), &
+               " Optimization of virtual NLMOs ", REPEAT("-", 24)
+         ENDIF
+         WRITE (unit_nr, '()')
+         WRITE (unit_nr, '(T2,A13,A6,A23,A14,A14,A9)') "Method", "Iter", &
+            "Objective Function", "Change", "Convergence", "Time"
+         WRITE (unit_nr, '(T2,A)') REPEAT("-", 79)
+      ENDIF
 
       ! compute and store MO-indepedent data
       CALL nlmo_env_init(nlmo_env=nlmo_env, &
@@ -1757,42 +1784,46 @@ CONTAINS
                          distr_type_AOs=almo_scf_env%mat_distr_aos, &
                          eps_filter=almo_scf_env%eps_filter)
 
-      almo_scf_env%overlap_determinant = 1.0_dp ! RZK->ZL: why is this set?
-      almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength = &
-         -1.0_dp*almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength
+      almo_scf_env%overlap_determinant = 1.0_dp
 
       ! loop over the strength of the orthogonalization penalty
-      prev_determinant = 10.0_dp !RZK->ZL: why is this set?
+      prev_determinant = 10.0_dp
+      penalty_alpha = almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength
       DO WHILE (almo_scf_env%overlap_determinant .GT. almo_scf_env%opt_nlmo_pcg%opt_penalty%final_determinant)
+
+         IF (unit_nr > 0) THEN
+            WRITE (unit_nr, '()')
+            WRITE (unit_nr, '(T2,A)') REPEAT("-", 79)
+            print_string = "Penalty alpha (dimensionless):"
+            WRITE (unit_nr, '(T2,A59,F20.10)') print_string, penalty_alpha
+            WRITE (unit_nr, '(T2,A)') REPEAT("-", 79)
+            WRITE (unit_nr, '()')
+         ENDIF
 
          IF (.NOT. virtuals) THEN
             CALL almo_scf_construct_nlmos(qs_env=qs_env, &
                                           nlmo_env=nlmo_env, &
                                           optimizer=almo_scf_env%opt_nlmo_pcg, &
                                           matrix_s=almo_scf_env%matrix_s(1), &
-                                          matrix_mo_in=almo_scf_env%matrix_t, &
-                                          matrix_mo_out=almo_scf_env%matrix_t, &
-                                          template_matrix_sigma=almo_scf_env%matrix_sigma_inv, &
-                                          overlap_determinant=almo_scf_env%overlap_determinant, &
-                                          virtuals=virtuals, &
-                                          eps_filter=almo_scf_env%eps_filter)
+                                          matrix_mo_inout=almo_scf_env%matrix_t, &
+                                          matrix_templateOO=almo_scf_env%matrix_sigma_inv)
          ELSE
             CALL almo_scf_construct_nlmos(qs_env=qs_env, &
                                           nlmo_env=nlmo_env, &
                                           optimizer=almo_scf_env%opt_nlmo_pcg, &
                                           matrix_s=almo_scf_env%matrix_s(1), &
-                                          matrix_mo_in=almo_scf_env%matrix_v, &
-                                          matrix_mo_out=almo_scf_env%matrix_v, &
-                                          template_matrix_sigma=almo_scf_env%matrix_sigma_vv, &
-                                          overlap_determinant=almo_scf_env%overlap_determinant, &
-                                          virtuals=virtuals, &
-                                          eps_filter=almo_scf_env%eps_filter)
+                                          matrix_mo_inout=almo_scf_env%matrix_v, &
+                                          matrix_templateOO=almo_scf_env%matrix_sigma_vv)
          ENDIF
 
+         ! almo_scf_env stores the largest of the determinants of the two spins
+         almo_scf_env%overlap_determinant = MAXVAL(nlmo_env%overlap_determinant)
+
          det_diff = prev_determinant - almo_scf_env%overlap_determinant
-         almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength = &
-            almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength/ &
-            ABS(almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength_dec_factor)
+         nlmo_env%penalty_strength(:) = nlmo_env%penalty_strength(:)/ &
+                                        ABS(almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength_dec_factor)
+         penalty_alpha = penalty_alpha/ &
+                         ABS(almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength_dec_factor)
 
          IF (det_diff < almo_scf_env%opt_nlmo_pcg%opt_penalty%determinant_tolerance) THEN
             EXIT
@@ -1800,6 +1831,29 @@ CONTAINS
          prev_determinant = almo_scf_env%overlap_determinant
 
       ENDDO
+
+      IF (unit_nr > 0) THEN
+         WRITE (unit_nr, '()')
+         WRITE (unit_nr, '(T2,A)') REPEAT("-", 79)
+
+         print_string = "Final localization:"
+         WRITE (unit_nr, '(T2,A59,F20.10)') &
+            print_string, nlmo_env%localization_component
+
+         print_string = "Final determinant (max over spins):"
+         WRITE (unit_nr, '(T2,A59,F20.10)') &
+            print_string, almo_scf_env%overlap_determinant
+
+         print_string = "Final penalty strength (max over spins, loc. units):"
+         WRITE (unit_nr, '(T2,A59,F20.10)') &
+            print_string, MAXVAL(ABS(nlmo_env%penalty_strength))
+
+         print_string = "Final penalty alpha (dimensionless):"
+         WRITE (unit_nr, '(T2,A59,F20.10)') &
+            print_string, penalty_alpha
+
+         WRITE (unit_nr, '(T2,A)') REPEAT("-", 79)
+      ENDIF
 
       CALL nlmo_env_release(nlmo_env)
 
