@@ -129,7 +129,16 @@ MODULE nlmo_types
    PUBLIC :: nlmo_env_type, &
              nlmo_env_init, &
              nlmo_env_release, &
-             nlmo_env_compute_BK_ij
+             nlmo_env_compute_BK_ij, &
+             nlmo_env_set_flags, &
+             nlmo_env_allocate_all, &
+             nlmo_env_mainvar_initial_guess, &
+             nlmo_env_compute_sigma0_ij, &
+             nlmo_env_mainvar_to_aux, &
+             nlmo_env_loss_function, &
+             nlmo_env_loss_gradient, &
+             nlmo_env_loss_curvature_grad_to_step, &
+             nlmo_env_deallocate_all
 
    TYPE nlmo_env_type
 
@@ -153,16 +162,16 @@ MODULE nlmo_types
                                                             m_sigma, &
                                                             m_siginv, &
                                                             m_mo, &
-                                                            m_mo_initial !<== m_t_mo_local
+                                                            m_mo_initial
 
       ! Loss function components
-      REAL(KIND=dp)                                      :: localization_component, & ! <==localization_obj_function
-                                                            orthogonalization_component ! <==penalty_func_new
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: overlap_determinant
+      REAL(KIND=dp)                                      :: localization_component, &
+                                                            orthogonalization_component
+      REAL(KIND=dp), DIMENSION(2)                        :: overlap_determinant
 
       ! nonorthogonality penalty strength
       REAL(KIND=dp)                                      :: penalty_amplitude
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: penalty_strength ! <==penalty_vol_prefactor(nspins))
+      REAL(KIND=dp), DIMENSION(2)                        :: penalty_strength
       LOGICAL                                            :: penalty_strength_is_computed
 
       ! second derivative (approximate, model or exact)
@@ -204,6 +213,8 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
 
 
+      nlmo_env%penalty_strength(:) = 0.0_dp
+      nlmo_env%overlap_determinant(:) = 0.0_dp
       nlmo_env%penalty_strength_is_computed = .FALSE.
 
       nlmo_env%loc_operator = loc_operator
@@ -301,11 +312,10 @@ CONTAINS
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
-   SUBROUTINE nlmo_env_compute_BK_ij(nlmo_env, qs_env, m_mo0, m_metricNN, m_templateOO)
+   SUBROUTINE nlmo_env_compute_BK_ij(nlmo_env, qs_env, m_metricNN, m_templateOO)
 
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_mo0
       TYPE(dbcsr_type), INTENT(IN)                       :: m_metricNN
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_templateOO
 
@@ -316,7 +326,7 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
-      nspins = SIZE(m_mo0)
+      nspins = SIZE(nlmo_env%m_mo_initial)
       dim_reim = -1
       dim_op = -1
       SELECT CASE (nlmo_env%loc_operator)
@@ -350,6 +360,7 @@ CONTAINS
                       qs_kind_set=qs_kind_set)
 
       natoms = SIZE(particle_set, 1)
+
       ALLOCATE (first_sgf(natoms))
       ALLOCATE (last_sgf(natoms))
       ALLOCATE (nsgf(natoms))
@@ -363,7 +374,7 @@ CONTAINS
 
          ! init temporary storage
          CALL dbcsr_create(tempNOcc1(ispin), &
-                           template=m_mo0(ispin), &
+                           template=nlmo_env%m_mo_initial(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
 
          SELECT CASE (nlmo_env%loc_operator)
@@ -375,12 +386,12 @@ CONTAINS
 
                   CALL dbcsr_multiply("N", "N", 1.0_dp, &
                                       nlmo_env%op_sm_set(reim, idim0)%matrix, &
-                                      m_mo0(ispin), &
+                                      nlmo_env%m_mo_initial(ispin), &
                                       0.0_dp, tempNOcc1(ispin), &
                                       filter_eps=nlmo_env%eps_filter)
 
                   CALL dbcsr_multiply("T", "N", 1.0_dp, &
-                                      m_mo0(ispin), &
+                                      nlmo_env%m_mo_initial(ispin), &
                                       tempNOcc1(ispin), &
                                       0.0_dp, nlmo_env%m_B0(reim, idim0, ispin), &
                                       filter_eps=nlmo_env%eps_filter)
@@ -398,12 +409,12 @@ CONTAINS
 
                CALL dbcsr_multiply("N", "N", 1.0_dp, &
                                    m_metricNN, &
-                                   m_mo0(ispin), &
+                                   nlmo_env%m_mo_initial(ispin), &
                                    0.0_dp, tempNOcc1(ispin), &
                                    filter_eps=nlmo_env%eps_filter)
 
                CALL dbcsr_multiply("T", "N", 0.5_dp, &
-                                   m_mo0(ispin), &
+                                   nlmo_env%m_mo_initial(ispin), &
                                    tempNOcc1(ispin), &
                                    0.0_dp, nlmo_env%m_B0(1, iatom, ispin), &
                                    first_k=isgf, last_k=isgf + ncol - 1, &
@@ -411,13 +422,13 @@ CONTAINS
 
                CALL dbcsr_multiply("N", "N", 1.0_dp, &
                                    m_metricNN, &
-                                   m_mo0(ispin), &
+                                   nlmo_env%m_mo_initial(ispin), &
                                    0.0_dp, tempNOcc1(ispin), &
                                    first_k=isgf, last_k=isgf + ncol - 1, &
                                    filter_eps=nlmo_env%eps_filter)
 
                CALL dbcsr_multiply("T", "N", 0.5_dp, &
-                                   m_mo0(ispin), &
+                                   nlmo_env%m_mo_initial(ispin), &
                                    tempNOcc1(ispin), &
                                    1.0_dp, nlmo_env%m_B0(1, iatom, ispin), &
                                    filter_eps=nlmo_env%eps_filter)
@@ -521,10 +532,6 @@ CONTAINS
       IF (nlmo_env%l_bfgs) THEN
          CALL lbfgs_create(nlmo_env%nlmo_lbfgs_history, nspins, nstore=10)
       ENDIF
-
-      ! strength (size-dependent prefactor) will be updated downstream
-      ALLOCATE (nlmo_env%penalty_strength(nspins))
-      ALLOCATE (nlmo_env%overlap_determinant(nspins))
 
       ! theta is the main variable: orbital mixing coefficients
       ALLOCATE (nlmo_env%m_theta(nspins))
@@ -706,7 +713,6 @@ CONTAINS
                              nlmo_env%m_theta_normalized(ispin), &
                              0.0_dp, nlmo_env%m_mo(ispin), &
                              filter_eps=nlmo_env%eps_filter)
-         ! RZK-critical: return final MOS from the environment to t_out
 
          ! compute sigma
          CALL dbcsr_multiply("N", "N", 1.0_dp, &
@@ -830,16 +836,11 @@ CONTAINS
          ! save the current determinant
          nlmo_env%overlap_determinant(ispin) = det1
 
-         !RZK-critical: do not set penalty_amplitude to zero
          IF (.NOT. nlmo_env%penalty_strength_is_computed) THEN
-            nlmo_env%penalty_strength = -nlmo_env%penalty_amplitude*local_function_ispin
-            nlmo_env%penalty_strength_is_computed = .TRUE.
+            nlmo_env%penalty_strength(ispin) = -nlmo_env%penalty_amplitude*local_function_ispin
+            IF (ispin .EQ. nspins) nlmo_env%penalty_strength_is_computed = .TRUE.
          ENDIF
          penal_function_ispin = nlmo_env%penalty_strength(ispin)*LOG(det1)
-         !IF (just_started .AND. penalty_amplitude .LT. 0.0_dp) THEN
-         !   penalty_vol_prefactor(ispin) = -(-penalty_amplitude)*local_function_ispin
-         !ENDIF
-         !penal_function_ispin = penalty_vol_prefactor(ispin)*LOG(det1)
 
          CALL dbcsr_release(tempOccOcc1)
          CALL dbcsr_release(tempOccOcc2)
@@ -873,7 +874,6 @@ CONTAINS
          routineP = moduleN//':'//routineN
 
       INTEGER                                            :: dim0, handle, idim0, ispin, nspins, reim
-      REAL(KIND=dp)                                      :: norm_loc, norm_vol
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: tg_diagonal, z2
       TYPE(dbcsr_type)                                   :: m_temp_oo_1, m_temp_oo_2, m_temp_oo_3, &
                                                             m_temp_oo_4
@@ -1094,7 +1094,6 @@ CONTAINS
 
             ELSE IF (l_bfgs) THEN
 
-               !RZK-critical: this gradient has to be taken from the nlmo_env
                CALL lbfgs_seed(nlmo_env%nlmo_lbfgs_history, nlmo_env%m_theta, grad)
                DO ispin = 1, nspins
                   CALL dbcsr_copy(step(ispin), grad(ispin))
@@ -1236,8 +1235,6 @@ CONTAINS
          CALL dbcsr_release(nlmo_env%m_siginv(ispin))
       ENDDO ! ispin
 
-      DEALLOCATE (nlmo_env%penalty_strength)
-      DEALLOCATE (nlmo_env%overlap_determinant)
       DEALLOCATE (nlmo_env%m_theta)
       DEALLOCATE (nlmo_env%m_mo_initial)
       DEALLOCATE (nlmo_env%m_mo)

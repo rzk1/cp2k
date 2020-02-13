@@ -16,18 +16,13 @@ MODULE almo_scf_optimizer
                                               almo_scf_diis_push,&
                                               almo_scf_diis_release,&
                                               almo_scf_diis_type
-   USE almo_scf_lbfgs_types,            ONLY: lbfgs_create,&
-                                              lbfgs_get_direction,&
-                                              lbfgs_history_type,&
-                                              lbfgs_release,&
-                                              lbfgs_seed
    USE almo_scf_methods,                ONLY: &
         almo_scf_ks_blk_to_tv_blk, almo_scf_ks_to_ks_blk, almo_scf_ks_to_ks_xx, &
         almo_scf_ks_xx_to_tv_xx, almo_scf_p_blk_to_t_blk, almo_scf_t_rescaling, &
         almo_scf_t_to_proj, apply_domain_operators, apply_projector, &
         construct_domain_preconditioner, construct_domain_r_down, construct_domain_s_inv, &
-        construct_domain_s_sqrt, fill_matrix_with_ones, get_overlap, orthogonalize_mos, &
-        pseudo_invert_diagonal_blk, xalmo_initial_guess
+        construct_domain_s_sqrt, get_overlap, orthogonalize_mos, pseudo_invert_diagonal_blk, &
+        xalmo_initial_guess
    USE almo_scf_qs,                     ONLY: almo_dm_to_almo_ks,&
                                               almo_dm_to_qs_env,&
                                               almo_scf_update_ks_energy,&
@@ -91,8 +86,11 @@ MODULE almo_scf_optimizer
    USE machine,                         ONLY: m_flush,&
                                               m_walltime
    USE message_passing,                 ONLY: mp_sum
-   USE nlmo_types,                      ONLY: nlmo_env_compute_BK_ij,&
-                                              nlmo_env_type
+   USE nlmo_types,                      ONLY: &
+        nlmo_env_allocate_all, nlmo_env_compute_BK_ij, nlmo_env_compute_sigma0_ij, &
+        nlmo_env_deallocate_all, nlmo_env_loss_curvature_grad_to_step, nlmo_env_loss_function, &
+        nlmo_env_loss_gradient, nlmo_env_mainvar_initial_guess, nlmo_env_mainvar_to_aux, &
+        nlmo_env_set_flags, nlmo_env_type
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
@@ -1990,56 +1988,42 @@ CONTAINS
 !> \param nlmo_env ...
 !> \param optimizer   controls the optimization algorithm
 !> \param matrix_s - AO overlap (NAOs x NAOs)
-!> \param matrix_mo_in - initial MOs (NAOs x NMOs)
-!> \param matrix_mo_out - final MOs (NAOs x NMOs)
-!> \param template_matrix_sigma - template (NMOs x NMOs)
-!> \param overlap_determinant - the determinant of the MOs overlap
-!> \param virtuals ...
-!> \param eps_filter ...
+!> \param matrix_mo_inout - initial and final MOs (NAOs x NMOs)
+!> \param matrix_templateOO - template (NMOs x NMOs)
 !> \par History
 !>       2018.10 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
    SUBROUTINE almo_scf_construct_nlmos(qs_env, nlmo_env, optimizer, &
-                                       matrix_s, matrix_mo_in, matrix_mo_out, &
-                                       template_matrix_sigma, overlap_determinant, &
-                                       virtuals, eps_filter)
+                                       matrix_s, matrix_mo_inout, &
+                                       matrix_templateOO)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
       TYPE(optimizer_options_type), INTENT(INOUT)        :: optimizer
       TYPE(dbcsr_type), INTENT(IN)                       :: matrix_s
       TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:), &
-         INTENT(INOUT)                                   :: matrix_mo_in, matrix_mo_out
+         INTENT(INOUT)                                   :: matrix_mo_inout
       TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:), &
-         INTENT(IN)                                      :: template_matrix_sigma
-      REAL(KIND=dp), INTENT(INOUT)                       :: overlap_determinant
-      LOGICAL, INTENT(IN)                                :: virtuals
-      REAL(KIND=dp), INTENT(IN)                          :: eps_filter
+         INTENT(IN)                                      :: matrix_templateOO
 
       CHARACTER(len=*), PARAMETER :: routineN = 'almo_scf_construct_nlmos', &
          routineP = moduleN//':'//routineN
 
-      CHARACTER(LEN=30)                                  :: iter_type, print_string
+      CHARACTER(LEN=30)                                  :: iter_type
       INTEGER :: cg_iteration, handle, ispin, iteration, line_search_iteration, &
-         linear_search_type, max_iter, nspins, outer_iteration, outer_max_iter, para_group, &
-         prec_type, unit_nr
-      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: nocc
-      LOGICAL                                            :: converged, d_bfgs, just_started, l_bfgs, &
-                                                            line_search, outer_prepare_to_exit, &
+         linear_search_type, max_iter, nspins, outer_iteration, outer_max_iter, unit_nr
+      LOGICAL                                            :: converged, just_started, line_search, &
+                                                            outer_prepare_to_exit, &
                                                             prepare_to_exit, reset_conjugator
-      REAL(KIND=dp) :: appr_sec_der, beta, bfgs_rho, bfgs_sum, denom, denom2, e0, e1, g0, g0sign, &
-         g1, g1sign, grad_norm, line_search_error, localization_obj_function, &
-         next_step_size_guess, obj_function_ispin, objf_diff, objf_new, objf_old, &
-         penalty_amplitude, penalty_func_new, spin_factor, step_size, t1, t2, tempreal
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diagonal, grad_norm_spin, &
-                                                            penalty_vol_prefactor, &
-                                                            suggested_vol_penalty
+      REAL(KIND=dp) :: appr_sec_der, beta, denom, denom2, e0, e1, g0, g0sign, g1, g1sign, &
+         grad_norm, line_search_error, localization_obj_function, next_step_size_guess, &
+         obj_function_ispin, objf_diff, objf_new, objf_old, penalty_func_new, step_size, t1, t2, &
+         tempreal
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: grad_norm_spin
+      REAL(KIND=dp), DIMENSION(2)                        :: loss_components, overlap_determinant
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:) :: approx_inv_hessian, bfgs_s, bfgs_y, grad, &
-         m_S0, m_sig_sqrti_ii, m_siginv, m_sigma, m_t_mo_local, m_theta, m_theta_normalized, &
-         prev_grad, prev_m_theta, prev_minus_prec_grad, prev_step, step, tempNOcc1, tempOccOcc1, &
-         tempOccOcc2, tempOccOcc3
-      TYPE(lbfgs_history_type)                           :: nlmo_lbfgs_history
+      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: prev_grad, prev_m_theta, &
+                                                            prev_minus_prec_grad, prev_step, step
 
       CALL timeset(routineN, handle)
 
@@ -2051,177 +2035,53 @@ CONTAINS
          unit_nr = -1
       ENDIF
 
-      IF (unit_nr > 0) THEN
-         WRITE (unit_nr, *)
-         IF (.NOT. virtuals) THEN
-            WRITE (unit_nr, '(T2,A,A,A)') REPEAT("-", 24), &
-               " Optimization of occupied NLMOs ", REPEAT("-", 23)
-         ELSE
-            WRITE (unit_nr, '(T2,A,A,A)') REPEAT("-", 24), &
-               " Optimization of virtual NLMOs ", REPEAT("-", 24)
-         ENDIF
-         WRITE (unit_nr, *)
-         WRITE (unit_nr, '(T2,A13,A6,A23,A14,A14,A9)') "Method", "Iter", &
-            "Objective Function", "Change", "Convergence", "Time"
-         WRITE (unit_nr, '(T2,A)') REPEAT("-", 79)
-      ENDIF
-
-      nspins = SIZE(matrix_mo_in)
-
-      ! m_theta contains a set of variational parameters
-      ! that define one-electron orbitals
-      ALLOCATE (m_theta(nspins))
-      DO ispin = 1, nspins
-         CALL dbcsr_create(m_theta(ispin), &
-                           template=template_matrix_sigma(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         ! create initial guess for the main variable - identity matrix
-         CALL dbcsr_set(m_theta(ispin), 0.0_dp)
-         CALL dbcsr_add_on_diag(m_theta(ispin), 1.0_dp)
-      ENDDO
-
-      penalty_amplitude = optimizer%opt_penalty%penalty_strength
-      prec_type = optimizer%preconditioner
-
-      ! use diagonal BFGS if preconditioner is set
-      d_bfgs = .FALSE.
-      l_bfgs = .FALSE.
-      IF (prec_type .NE. xalmo_prec_zero) l_bfgs = .TRUE.
-      IF (l_bfgs .AND. (optimizer%conjugator .NE. cg_zero)) THEN
-         CPABORT("Cannot use conjugators with BFGS")
-      ENDIF
-      IF (l_bfgs) THEN
-         CALL lbfgs_create(nlmo_lbfgs_history, nspins, nstore=10)
-      ENDIF
-
-      IF (nspins == 1) THEN
-         spin_factor = 2.0_dp
-      ELSE
-         spin_factor = 1.0_dp
-      ENDIF
+      nspins = SIZE(matrix_mo_inout)
+      CALL nlmo_env_set_flags(nlmo_env=nlmo_env, &
+                              optimizer=optimizer)
+      CALL nlmo_env_allocate_all(nlmo_env=nlmo_env, &
+                                 templateOO=matrix_templateOO, &
+                                 templateNO=matrix_mo_inout)
+      CALL nlmo_env_mainvar_initial_guess(nlmo_env=nlmo_env, &
+                                          m_mo_initial=matrix_mo_inout)
+      ! compute the overlap of the initial orbitals
+      CALL nlmo_env_compute_sigma0_ij(nlmo_env=nlmo_env, &
+                                      matrix_s=matrix_s)
+      ! use initial orbitals to compute the BK matrix
+      CALL nlmo_env_compute_BK_ij(nlmo_env=nlmo_env, &
+                                  qs_env=qs_env, &
+                                  m_metricNN=matrix_s, &
+                                  m_templateOO=nlmo_env%m_S0)
 
       ALLOCATE (grad_norm_spin(nspins))
-      ALLOCATE (nocc(nspins))
-      ALLOCATE (penalty_vol_prefactor(nspins))
-      ALLOCATE (suggested_vol_penalty(nspins))
-
-      ! create a local copy of matrix_mo_in because
-      ! matrix_mo_in and matrix_mo_out can be the same matrix
-      ! we need to make sure data in matrix_mo_in is intact
-      ! after we start writing to matrix_mo_out
-      ALLOCATE (m_t_mo_local(nspins))
-      DO ispin = 1, nspins
-         CALL dbcsr_create(m_t_mo_local(ispin), &
-                           template=matrix_mo_in(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_copy(m_t_mo_local(ispin), matrix_mo_in(ispin))
-      ENDDO
-
-      ALLOCATE (approx_inv_hessian(nspins))
-      ALLOCATE (m_theta_normalized(nspins))
       ALLOCATE (prev_m_theta(nspins))
-      ALLOCATE (m_S0(nspins))
       ALLOCATE (prev_grad(nspins))
-      ALLOCATE (grad(nspins))
       ALLOCATE (prev_step(nspins))
       ALLOCATE (step(nspins))
       ALLOCATE (prev_minus_prec_grad(nspins))
-      ALLOCATE (m_sig_sqrti_ii(nspins))
-      ALLOCATE (m_sigma(nspins))
-      ALLOCATE (m_siginv(nspins))
-      ALLOCATE (tempNOcc1(nspins))
-      ALLOCATE (tempOccOcc1(nspins))
-      ALLOCATE (tempOccOcc2(nspins))
-      ALLOCATE (tempOccOcc3(nspins))
-      ALLOCATE (bfgs_y(nspins))
-      ALLOCATE (bfgs_s(nspins))
 
       DO ispin = 1, nspins
 
          ! init temporary storage
-         CALL dbcsr_create(tempNOcc1(ispin), &
-                           template=matrix_mo_out(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(approx_inv_hessian(ispin), &
-                           template=m_theta(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(m_theta_normalized(ispin), &
-                           template=m_theta(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(prev_m_theta(ispin), &
-                           template=m_theta(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(m_S0(ispin), &
-                           template=m_theta(ispin), &
+                           template=nlmo_env%m_S0(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(prev_grad(ispin), &
-                           template=m_theta(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(grad(ispin), &
-                           template=m_theta(ispin), &
+                           template=nlmo_env%m_S0(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(prev_step(ispin), &
-                           template=m_theta(ispin), &
+                           template=nlmo_env%m_S0(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(step(ispin), &
-                           template=m_theta(ispin), &
+                           template=nlmo_env%m_S0(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(prev_minus_prec_grad(ispin), &
-                           template=m_theta(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(m_sig_sqrti_ii(ispin), &
-                           template=m_theta(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(m_sigma(ispin), &
-                           template=m_theta(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(m_siginv(ispin), &
-                           template=m_theta(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(tempOccOcc1(ispin), &
-                           template=m_theta(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(tempOccOcc2(ispin), &
-                           template=m_theta(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(tempOccOcc3(ispin), &
-                           template=m_theta(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(bfgs_s(ispin), &
-                           template=m_theta(ispin), &
-                           matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(bfgs_y(ispin), &
-                           template=m_theta(ispin), &
+                           template=nlmo_env%m_S0(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
 
          CALL dbcsr_set(step(ispin), 0.0_dp)
          CALL dbcsr_set(prev_step(ispin), 0.0_dp)
 
-         CALL dbcsr_get_info(template_matrix_sigma(ispin), &
-                             nfullrows_total=nocc(ispin))
-
-         penalty_vol_prefactor(ispin) = -penalty_amplitude !KEEP: * spin_factor * nocc(ispin)
-
-         ! compute m_S0=T0^t.S.T0
-         CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                             matrix_s, &
-                             m_t_mo_local(ispin), &
-                             0.0_dp, tempNOcc1(ispin), &
-                             filter_eps=eps_filter)
-         CALL dbcsr_multiply("T", "N", 1.0_dp, &
-                             m_t_mo_local(ispin), &
-                             tempNOcc1(ispin), &
-                             0.0_dp, m_S0(ispin), &
-                             filter_eps=eps_filter)
-
       ENDDO ! ispin
-
-      ! use initial orbitals to compute the BK matrix
-      CALL nlmo_env_compute_BK_ij(nlmo_env=nlmo_env, &
-                                  qs_env=qs_env, &
-                                  m_mo0=m_t_mo_local, &
-                                  m_metricNN=matrix_s, &
-                                  m_templateOO=m_S0)
 
       ! start the outer SCF loop
       outer_max_iter = optimizer%max_iter_outer_loop
@@ -2231,7 +2091,6 @@ CONTAINS
       penalty_func_new = 0.0_dp
       linear_search_type = 1 ! safe restart, no quadratic assumption, takes more steps
       localization_obj_function = 0.0_dp
-      penalty_func_new = 0.0_dp
 
       DO
 
@@ -2255,103 +2114,30 @@ CONTAINS
 
             just_started = (iteration .EQ. 0) .AND. (outer_iteration .EQ. 0)
 
-            ! RZK->ZL: create a function that computes aux matrices (e.g. sigma, sigmainv, normalization)
-            DO ispin = 1, nspins
+            ! use the main variable to compute aux matrices
+            CALL nlmo_env_mainvar_to_aux(nlmo_env)
 
-               CALL dbcsr_get_info(m_sig_sqrti_ii(ispin), group=para_group)
-
-               ! compute diagonal (a^t.sigma0.a)^(-1/2)
-               CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                                   m_S0(ispin), m_theta(ispin), 0.0_dp, &
-                                   tempOccOcc1(ispin), &
-                                   filter_eps=eps_filter)
-               CALL dbcsr_set(m_sig_sqrti_ii(ispin), 0.0_dp)
-               CALL dbcsr_add_on_diag(m_sig_sqrti_ii(ispin), 1.0_dp)
-               CALL dbcsr_multiply("T", "N", 1.0_dp, &
-                                   m_theta(ispin), tempOccOcc1(ispin), 0.0_dp, &
-                                   m_sig_sqrti_ii(ispin), &
-                                   retain_sparsity=.TRUE.)
-               ALLOCATE (diagonal(nocc(ispin)))
-               CALL dbcsr_get_diag(m_sig_sqrti_ii(ispin), diagonal)
-               CALL mp_sum(diagonal, para_group)
-               ! TODO: works for zero diagonal elements?
-               diagonal(:) = 1.0_dp/SQRT(diagonal(:))
-               CALL dbcsr_set(m_sig_sqrti_ii(ispin), 0.0_dp)
-               CALL dbcsr_set_diag(m_sig_sqrti_ii(ispin), diagonal)
-               DEALLOCATE (diagonal)
-
-               CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                                   m_theta(ispin), &
-                                   m_sig_sqrti_ii(ispin), &
-                                   0.0_dp, m_theta_normalized(ispin), &
-                                   filter_eps=eps_filter)
-
-               ! compute new orbitals
-               CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                                   m_t_mo_local(ispin), &
-                                   m_theta_normalized(ispin), &
-                                   0.0_dp, matrix_mo_out(ispin), &
-                                   filter_eps=eps_filter)
-
-            ENDDO
-
-            ! compute objective function
-            localization_obj_function = 0.0_dp
-            penalty_func_new = 0.0_dp
-            CALL compute_obj_nlmos( &
-               localization_function=localization_obj_function, &
-               penalty_function=penalty_func_new, &
-               overlap_determinant=overlap_determinant, &
-               m_sigma=m_sigma, &
-               nocc=nocc, &
-               m_B0=nlmo_env%m_B0, &
-               m_theta_normalized=m_theta_normalized, &
-               template_matrix_mo=matrix_mo_out, &
-               weights=nlmo_env%weights, &
-               m_S0=m_S0, &
-               just_started=just_started, &
-               penalty_vol_prefactor=penalty_vol_prefactor, &
-               penalty_amplitude=penalty_amplitude, &
-               eps_filter=eps_filter)
-            objf_new = penalty_func_new + localization_obj_function
+            ! compute objective (loss) function
+            loss_components = 0.0_dp
+            CALL nlmo_env_loss_function(nlmo_env, loss_components, overlap_determinant)
+            localization_obj_function = loss_components(1)
+            penalty_func_new = loss_components(2)
+            objf_new = SUM(loss_components)
 
             DO ispin = 1, nspins
                ! save the previous gradient to compute beta
                ! do it only if the previous grad was computed
                ! for .NOT.line_search
                IF (line_search_iteration .EQ. 0 .AND. iteration .NE. 0) THEN
-                  CALL dbcsr_copy(prev_grad(ispin), grad(ispin))
+                  CALL dbcsr_copy(prev_grad(ispin), nlmo_env%grad(ispin))
                ENDIF
             ENDDO ! ispin
 
-            DO ispin = 1, nspins
-
-               ! RZK->ZL if m_siginv is used elsewhere, include it into aux list
-               CALL invert_Hotelling( &
-                  matrix_inverse=m_siginv(ispin), &
-                  matrix=m_sigma(ispin), &
-                  threshold=eps_filter*10.0_dp, &
-                  filter_eps=eps_filter, &
-                  silent=.FALSE.)
-
-            ENDDO ! ispin
-
-            ! compute the gradient
-            CALL compute_gradient_nlmos( &
-               m_grad_out=grad, &
-               m_B0=nlmo_env%m_B0, &
-               weights=nlmo_env%weights, &
-               m_S0=m_S0, &
-               m_theta_normalized=m_theta_normalized, &
-               m_siginv=m_siginv, &
-               m_sig_sqrti_ii=m_sig_sqrti_ii, &
-               penalty_vol_prefactor=penalty_vol_prefactor, &
-               eps_filter=eps_filter, &
-               suggested_vol_penalty=suggested_vol_penalty)
+            CALL nlmo_env_loss_gradient(nlmo_env)
 
             ! check convergence and other exit criteria
             DO ispin = 1, nspins
-               CALL dbcsr_norm(grad(ispin), dbcsr_norm_maxabsnorm, &
+               CALL dbcsr_norm(nlmo_env%grad(ispin), dbcsr_norm_maxabsnorm, &
                                norm_scalar=grad_norm_spin(ispin))
             ENDDO ! ispin
             grad_norm = MAXVAL(grad_norm_spin)
@@ -2386,9 +2172,9 @@ CONTAINS
 
                      DO ispin = 1, nspins
 
-                        CALL dbcsr_dot(grad(ispin), step(ispin), tempreal)
+                        CALL dbcsr_dot(nlmo_env%grad(ispin), step(ispin), tempreal)
                         line_search_error = line_search_error + tempreal
-                        CALL dbcsr_dot(grad(ispin), grad(ispin), tempreal)
+                        CALL dbcsr_dot(nlmo_env%grad(ispin), nlmo_env%grad(ispin), tempreal)
                         denom = denom + tempreal
                         CALL dbcsr_dot(step(ispin), step(ispin), tempreal)
                         denom2 = denom2 + tempreal
@@ -2428,143 +2214,13 @@ CONTAINS
                      CALL dbcsr_copy(prev_step(ispin), step(ispin))
                   ENDDO ! ispin
 
-                  ! compute the new step:
-                  ! if available use second derivative info - bfgs, hessian, preconditioner
-                  IF (prec_type .EQ. xalmo_prec_zero) THEN ! no second derivatives
-
-                     ! no preconditioner
-                     DO ispin = 1, nspins
-
-                        CALL dbcsr_copy(step(ispin), grad(ispin))
-                        CALL dbcsr_scale(step(ispin), -1.0_dp)
-
-                     ENDDO ! ispin
-
-                  ELSE ! use second derivatives
-
-                     ! compute and invert hessian/precond?
-                     IF (iteration .EQ. 0) THEN
-
-                        IF (d_bfgs) THEN
-
-                           ! create matrix filled with 1.0 here
-                           CALL fill_matrix_with_ones(approx_inv_hessian(1))
-                           IF (nspins .GT. 1) THEN
-                              DO ispin = 2, nspins
-                                 CALL dbcsr_copy(approx_inv_hessian(ispin), approx_inv_hessian(1))
-                              ENDDO
-                           ENDIF
-
-                        ELSE IF (l_bfgs) THEN
-
-                           CALL lbfgs_seed(nlmo_lbfgs_history, m_theta, grad)
-                           DO ispin = 1, nspins
-                              CALL dbcsr_copy(step(ispin), grad(ispin))
-                              CALL dbcsr_scale(step(ispin), -1.0_dp)
-                           ENDDO ! ispin
-
-                        ELSE
-
-                           ! computing preconditioner
-                           DO ispin = 1, nspins
-
-                              ! TODO: write preconditioner code later
-                              ! For now, create matrix filled with 1.0 here
-                              CALL fill_matrix_with_ones(approx_inv_hessian(ispin))
-                              !CALL compute_preconditioner(&
-                              !       m_prec_out=approx_hessian(ispin),&
-                              !       m_ks=almo_scf_env%matrix_ks(ispin),&
-                              !       m_s=matrix_s,&
-                              !       m_siginv=almo_scf_env%template_matrix_sigma(ispin),&
-                              !       m_quench_t=quench_t(ispin),&
-                              !       m_FTsiginv=FTsiginv(ispin),&
-                              !       m_siginvTFTsiginv=siginvTFTsiginv(ispin),&
-                              !       m_ST=ST(ispin),&
-                              !       para_env=almo_scf_env%para_env,&
-                              !       blacs_env=almo_scf_env%blacs_env,&
-                              !       nocc_of_domain=almo_scf_env%nocc_of_domain(:,ispin),&
-                              !       domain_s_inv=almo_scf_env%domain_s_inv(:,ispin),&
-                              !       domain_r_down=domain_r_down(:,ispin),&
-                              !       cpu_of_domain=almo_scf_env%cpu_of_domain,&
-                              !       domain_map=almo_scf_env%domain_map(ispin),&
-                              !       assume_t0_q0x=assume_t0_q0x,&
-                              !       penalty_occ_vol=penalty_occ_vol,&
-                              !       penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin),&
-                              !       eps_filter=eps_filter,&
-                              !       neg_thr=0.5_dp,&
-                              !       spin_factor=spin_factor,&
-                              !       special_case=my_special_case)
-                              !CALL invert hessian
-                           ENDDO ! ispin
-
-                        ENDIF
-
-                     ELSE ! not iteration zero
-
-                        ! update approx inverse hessian
-                        IF (d_bfgs) THEN ! diagonal BFGS
-
-                           DO ispin = 1, nspins
-
-                              ! compute s and y
-                              CALL dbcsr_copy(bfgs_y(ispin), grad(ispin))
-                              CALL dbcsr_add(bfgs_y(ispin), prev_grad(ispin), 1.0_dp, -1.0_dp)
-                              CALL dbcsr_copy(bfgs_s(ispin), m_theta(ispin))
-                              CALL dbcsr_add(bfgs_s(ispin), prev_m_theta(ispin), 1.0_dp, -1.0_dp)
-
-                              ! compute rho
-                              CALL dbcsr_dot(grad(ispin), step(ispin), bfgs_rho)
-                              bfgs_rho = 1.0_dp/bfgs_rho
-
-                              ! compute the sum of the squared elements of bfgs_y
-                              CALL dbcsr_dot(bfgs_y(ispin), bfgs_y(ispin), bfgs_sum)
-
-                              ! first term: start collecting new inv hessian in this temp matrix
-                              CALL dbcsr_copy(tempOccOcc2(ispin), approx_inv_hessian(ispin))
-
-                              ! second term: + rho * s * s
-                              CALL dbcsr_hadamard_product(bfgs_s(ispin), bfgs_s(ispin), tempOccOcc1(ispin))
-                              CALL dbcsr_add(tempOccOcc2(ispin), tempOccOcc1(ispin), 1.0_dp, bfgs_rho)
-
-                              ! third term: + rho^2 * s * s * H * sum_(y * y)
-                              CALL dbcsr_hadamard_product(tempOccOcc1(ispin), &
-                                                          approx_inv_hessian(ispin), tempOccOcc3(ispin))
-                              CALL dbcsr_add(tempOccOcc2(ispin), tempOccOcc3(ispin), &
-                                             1.0_dp, bfgs_rho*bfgs_rho*bfgs_sum)
-
-                              ! fourth term: - 2 * rho * s * y * H
-                              CALL dbcsr_hadamard_product(bfgs_y(ispin), &
-                                                          approx_inv_hessian(ispin), tempOccOcc1(ispin))
-                              CALL dbcsr_hadamard_product(bfgs_s(ispin), tempOccOcc1(ispin), tempOccOcc3(ispin))
-                              CALL dbcsr_add(tempOccOcc2(ispin), tempOccOcc3(ispin), &
-                                             1.0_dp, -2.0_dp*bfgs_rho)
-
-                              CALL dbcsr_copy(approx_inv_hessian(ispin), tempOccOcc2(ispin))
-
-                           ENDDO
-
-                        ELSE IF (l_bfgs) THEN
-
-                           CALL lbfgs_get_direction(nlmo_lbfgs_history, m_theta, grad, step)
-
-                        ENDIF ! which method?
-
-                     ENDIF ! compute approximate inverse hessian
-
-                     IF (.NOT. l_bfgs) THEN
-
-                        DO ispin = 1, nspins
-
-                           CALL dbcsr_hadamard_product(approx_inv_hessian(ispin), &
-                                                       grad(ispin), step(ispin))
-                           CALL dbcsr_scale(step(ispin), -1.0_dp)
-
-                        ENDDO ! ispin
-
-                     ENDIF
-
-                  ENDIF ! second derivative type fork
-
+                  ! compute the new step
+                  CALL nlmo_env_loss_curvature_grad_to_step(nlmo_env=nlmo_env, &
+                                                            grad=nlmo_env%grad, &
+                                                            step=step, &
+                                                            prev_grad=prev_grad, &
+                                                            prev_m_theta=prev_m_theta, &
+                                                            iteration=iteration)
                   ! check whether we need to reset conjugate directions
                   IF (iteration .EQ. 0) THEN
                      reset_conjugator = .TRUE.
@@ -2576,12 +2232,11 @@ CONTAINS
                         beta=beta, &
                         reset_conjugator=reset_conjugator, &
                         conjugator=optimizer%conjugator, &
-                        grad=grad(:), &
-                        prev_grad=prev_grad(:), &
-                        step=step(:), &
-                        prev_step=prev_step(:), &
-                        prev_minus_prec_grad=prev_minus_prec_grad(:) &
-                        )
+                        grad=nlmo_env%grad, &
+                        prev_grad=prev_grad, &
+                        step=step, &
+                        prev_step=prev_step, &
+                        prev_minus_prec_grad=prev_minus_prec_grad)
 
                   ENDIF
 
@@ -2615,7 +2270,7 @@ CONTAINS
                   e0 = objf_new
                   g0 = 0.0_dp
                   DO ispin = 1, nspins
-                     CALL dbcsr_dot(grad(ispin), step(ispin), tempreal)
+                     CALL dbcsr_dot(nlmo_env%grad(ispin), step(ispin), tempreal)
                      g0 = g0 + tempreal
                   ENDDO ! ispin
                   g0sign = SIGN(1.0_dp, g0) ! sign of g0
@@ -2645,7 +2300,7 @@ CONTAINS
                   e1 = objf_new
                   g1 = 0.0_dp
                   DO ispin = 1, nspins
-                     CALL dbcsr_dot(grad(ispin), step(ispin), tempreal)
+                     CALL dbcsr_dot(nlmo_env%grad(ispin), step(ispin), tempreal)
                      g1 = g1 + tempreal
                   ENDDO ! ispin
                   g1sign = SIGN(1.0_dp, g1) ! sign of g1
@@ -2682,9 +2337,9 @@ CONTAINS
                DO ispin = 1, nspins
                   IF (.NOT. line_search) THEN ! we prepared to perform the first line search
                      ! "previous" refers to the previous CG step, not the previous LS step
-                     CALL dbcsr_copy(prev_m_theta(ispin), m_theta(ispin))
+                     CALL dbcsr_copy(prev_m_theta(ispin), nlmo_env%m_theta(ispin))
                   ENDIF
-                  CALL dbcsr_add(m_theta(ispin), step(ispin), 1.0_dp, step_size)
+                  CALL dbcsr_add(nlmo_env%m_theta(ispin), step(ispin), 1.0_dp, step_size)
                ENDDO ! ispin
 
             ENDIF ! not.prepare_to_exit
@@ -2723,85 +2378,27 @@ CONTAINS
 
       ENDDO ! outer loop
 
-      ! return the optimal determinant penalty
-      optimizer%opt_penalty%penalty_strength = 0.0_dp
-      DO ispin = 1, nspins
-         optimizer%opt_penalty%penalty_strength = optimizer%opt_penalty%penalty_strength + &
-                                                  (-1.0_dp)*penalty_vol_prefactor(ispin)
-      ENDDO
-      optimizer%opt_penalty%penalty_strength = optimizer%opt_penalty%penalty_strength/nspins
-
-      IF (converged) THEN
-         iter_type = "Final"
-      ELSE
-         iter_type = "Unconverged"
-      ENDIF
-
-      IF (unit_nr > 0) THEN
-         WRITE (unit_nr, '()')
-         print_string = TRIM(iter_type)//" localization:"
-         WRITE (unit_nr, '(T2,A29,F30.10)') &
-            print_string, localization_obj_function
-         print_string = TRIM(iter_type)//" determinant:"
-         WRITE (unit_nr, '(T2,A29,F30.10)') &
-            print_string, overlap_determinant
-         print_string = TRIM(iter_type)//" penalty strength:"
-         WRITE (unit_nr, '(T2,A29,F30.10)') &
-            print_string, optimizer%opt_penalty%penalty_strength
-      ENDIF
-
       ! clean up
-      IF (l_bfgs) THEN
-         CALL lbfgs_release(nlmo_lbfgs_history)
-      ENDIF
       DO ispin = 1, nspins
-         CALL dbcsr_release(m_theta(ispin))
-         CALL dbcsr_release(m_t_mo_local(ispin))
-         CALL dbcsr_release(approx_inv_hessian(ispin))
          CALL dbcsr_release(prev_m_theta(ispin))
-         CALL dbcsr_release(m_theta_normalized(ispin))
-         CALL dbcsr_release(m_S0(ispin))
          CALL dbcsr_release(prev_grad(ispin))
-         CALL dbcsr_release(grad(ispin))
          CALL dbcsr_release(prev_step(ispin))
          CALL dbcsr_release(step(ispin))
          CALL dbcsr_release(prev_minus_prec_grad(ispin))
-         CALL dbcsr_release(m_sig_sqrti_ii(ispin))
-         CALL dbcsr_release(m_sigma(ispin))
-         CALL dbcsr_release(m_siginv(ispin))
-         CALL dbcsr_release(tempNOcc1(ispin))
-         CALL dbcsr_release(tempOccOcc1(ispin))
-         CALL dbcsr_release(tempOccOcc2(ispin))
-         CALL dbcsr_release(tempOccOcc3(ispin))
-         CALL dbcsr_release(bfgs_y(ispin))
-         CALL dbcsr_release(bfgs_s(ispin))
       ENDDO ! ispin
 
       DEALLOCATE (grad_norm_spin)
-      DEALLOCATE (nocc)
-      DEALLOCATE (penalty_vol_prefactor)
-      DEALLOCATE (suggested_vol_penalty)
-
-      DEALLOCATE (approx_inv_hessian)
       DEALLOCATE (prev_m_theta)
-      DEALLOCATE (m_theta_normalized)
-      DEALLOCATE (m_S0)
       DEALLOCATE (prev_grad)
-      DEALLOCATE (grad)
       DEALLOCATE (prev_step)
       DEALLOCATE (step)
       DEALLOCATE (prev_minus_prec_grad)
-      DEALLOCATE (m_sig_sqrti_ii)
-      DEALLOCATE (m_sigma)
-      DEALLOCATE (m_siginv)
-      DEALLOCATE (tempNOcc1)
-      DEALLOCATE (tempOccOcc1)
-      DEALLOCATE (tempOccOcc2)
-      DEALLOCATE (tempOccOcc3)
-      DEALLOCATE (bfgs_y)
-      DEALLOCATE (bfgs_s)
 
-      DEALLOCATE (m_theta, m_t_mo_local)
+      DO ispin = 1, nspins
+         CALL dbcsr_copy(matrix_mo_inout(ispin), nlmo_env%m_mo(ispin))
+      ENDDO ! ispin
+
+      CALL nlmo_env_deallocate_all(nlmo_env)
 
       IF (.NOT. converged) THEN
          CPABORT("Optimization not converged! ")
@@ -6282,7 +5879,6 @@ CONTAINS
 !> \param nocc ...
 !> \param m_B0 ...
 !> \param m_theta_normalized ...
-!> \param template_matrix_mo ...
 !> \param weights ...
 !> \param m_S0 ...
 !> \param just_started ...
@@ -6294,7 +5890,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE compute_obj_nlmos(localization_function, penalty_function, &
                                 penalty_vol_prefactor, overlap_determinant, m_sigma, nocc, m_B0, &
-                                m_theta_normalized, template_matrix_mo, weights, m_S0, just_started, &
+                                m_theta_normalized, weights, m_S0, just_started, &
                                 penalty_amplitude, eps_filter)
 
       REAL(KIND=dp), INTENT(INOUT)                       :: localization_function, penalty_function
@@ -6303,7 +5899,7 @@ CONTAINS
       TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_sigma
       INTEGER, DIMENSION(:), INTENT(IN)                  :: nocc
       TYPE(dbcsr_type), DIMENSION(:, :, :), INTENT(IN)   :: m_B0
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_theta_normalized, template_matrix_mo
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_theta_normalized
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: weights
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_S0
       LOGICAL, INTENT(IN)                                :: just_started
@@ -6429,14 +6025,13 @@ CONTAINS
 !> \param m_sig_sqrti_ii ...
 !> \param penalty_vol_prefactor ...
 !> \param eps_filter ...
-!> \param suggested_vol_penalty ...
 !> \par History
 !>       2018.10 created [Ziling Luo]
 !> \author Ziling Luo
 ! **************************************************************************************************
    SUBROUTINE compute_gradient_nlmos(m_grad_out, m_B0, weights, &
                                      m_S0, m_theta_normalized, m_siginv, m_sig_sqrti_ii, &
-                                     penalty_vol_prefactor, eps_filter, suggested_vol_penalty)
+                                     penalty_vol_prefactor, eps_filter)
 
       TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_grad_out
       TYPE(dbcsr_type), DIMENSION(:, :, :), INTENT(IN)   :: m_B0
@@ -6445,13 +6040,11 @@ CONTAINS
                                                             m_sig_sqrti_ii
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: penalty_vol_prefactor
       REAL(KIND=dp), INTENT(IN)                          :: eps_filter
-      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: suggested_vol_penalty
 
       CHARACTER(len=*), PARAMETER :: routineN = 'compute_gradient_nlmos', &
          routineP = moduleN//':'//routineN
 
       INTEGER                                            :: dim0, handle, idim0, ispin, nspins, reim
-      REAL(KIND=dp)                                      :: norm_loc, norm_vol
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: tg_diagonal, z2
       TYPE(dbcsr_type)                                   :: m_temp_oo_1, m_temp_oo_2, m_temp_oo_3, &
                                                             m_temp_oo_4
@@ -6556,11 +6149,11 @@ CONTAINS
                              m_siginv(ispin), &
                              0.0_dp, m_temp_oo_3, &
                              filter_eps=eps_filter)
-         CALL dbcsr_norm(m_temp_oo_3, &
-                         dbcsr_norm_maxabsnorm, norm_scalar=norm_vol)
-         CALL dbcsr_norm(m_temp_oo_1, &
-                         dbcsr_norm_maxabsnorm, norm_scalar=norm_loc)
-         suggested_vol_penalty(ispin) = norm_loc/norm_vol
+         !CALL dbcsr_norm(m_temp_oo_3, &
+         !                dbcsr_norm_maxabsnorm, norm_scalar=norm_vol)
+         !CALL dbcsr_norm(m_temp_oo_1, &
+         !                dbcsr_norm_maxabsnorm, norm_scalar=norm_loc)
+         !suggested_vol_penalty(ispin) = norm_loc/norm_vol
          CALL dbcsr_add(m_temp_oo_1, m_temp_oo_3, &
                         1.0_dp, 2.0_dp*penalty_vol_prefactor(ispin))
 
@@ -8882,1455 +8475,6 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE hessian_diag_apply
-
-!! **************************************************************************************************
-!!> \brief Optimization of NLMOs using trust region minimizers
-!!> \par History
-!!>       2020.01 created [Rustam Z Khaliullin]
-!!> \author Rustam Z Khaliullin
-!! **************************************************************************************************
-!   SUBROUTINE construct_nlmos_trustr(qs_env, optimizer, &
-!                                    matrix_s, matrix_mo_in, matrix_mo_out, &
-!                                    template_matrix_sigma, overlap_determinant, &
-!                                    mat_distr_aos, virtuals, eps_filter)
-!      TYPE(qs_environment_type), POINTER                 :: qs_env
-!      TYPE(optimizer_options_type)                       :: optimizer
-!      TYPE(dbcsr_type)                                   :: matrix_s
-!      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: matrix_mo_in, &
-!                                                            matrix_mo_out, &
-!                                                            template_matrix_sigma
-!      REAL(KIND=dp), INTENT(INOUT)                       :: overlap_determinant
-!      INTEGER, INTENT(IN)                                :: mat_distr_aos
-!      LOGICAL                                            :: virtuals
-!      REAL(KIND=dp), INTENT(IN)                          :: eps_filter
-!
-!      CHARACTER(len=*), PARAMETER :: routineN = 'construct_nlmos_trustr', &
-!         routineP = moduleN//':'//routineN
-!
-!      INTEGER :: handle, ispin, iteration, iteration_type_to_report, my_special_case, ndomains, &
-!         nspins, outer_iteration, prec_type, unit_nr
-!      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: nocc
-!      LOGICAL :: assume_t0_q0x, border_reached, inner_loop_success, normalize_orbitals, &
-!         optimize_theta, penalty_occ_vol, reset_conjugator, same_position, scf_converged
-!      REAL(kind=dp) :: beta, energy_start, energy_trial, eta, expected_reduction, &
-!         fake_step_size_to_report, grad_norm_ratio, grad_norm_ref, loss_change_to_report, &
-!         loss_start, loss_trial, model_grad_norm, penalty_amplitude, penalty_start, penalty_trial, &
-!         radius_current, radius_max, real_temp, rho, spin_factor, step_norm, step_size, t1, &
-!         t1outer, t2, t2outer, y_scalar
-!      REAL(kind=dp), ALLOCATABLE, DIMENSION(:)           :: grad_norm_spin, &
-!                                                            penalty_occ_vol_g_prefactor, &
-!                                                            penalty_occ_vol_h_prefactor
-!      TYPE(cp_logger_type), POINTER                      :: logger
-!      TYPE(dbcsr_type)                                   :: m_s_inv
-!      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:) :: FTsiginv, grad, m_model_Bd, m_model_d, &
-!         m_model_hessian, m_model_hessian_inv, m_model_r, m_model_r_prev, m_model_rt, &
-!         m_model_rt_prev, m_sig_sqrti_ii, m_theta, m_theta_trial, prev_step, siginvTFTsiginv, ST, &
-!         step, STsiginv_0
-!      TYPE(domain_submatrix_type), ALLOCATABLE, &
-!         DIMENSION(:, :)                                 :: domain_model_hessian_inv, domain_r_down
-!
-!
-!      CHARACTER(LEN=30)                                  :: iter_type, print_string
-!      TYPE(cell_type), POINTER                           :: cell
-!      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: op_sm_set_qs, op_sm_set_almo
-!      TYPE(cp_logger_type), POINTER                      :: logger
-!      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: qs_matrix_s
-!      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: nocc
-!      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:,:,:)    :: m_B0
-!      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: m_theta, &
-!                                                            prev_grad, prev_minus_prec_grad, &
-!                                                            prev_step, m_S0, step, m_sig_sqrti_ii, &
-!                                                            m_t_mo_local, approx_inv_hessian, &
-!                                                            m_sigma, m_theta_normalized, &
-!                                                            grad, m_siginv, prev_m_theta, &
-!                                                            tempNOcc1, tempOccOcc1, tempOccOcc2, &
-!                                                            tempOccOcc3, bfgs_y, bfgs_s
-!      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: z2, reim_diag, weights, grad_norm_spin, &
-!                                                            diagonal, penalty_vol_prefactor, &
-!                                                            suggested_vol_penalty
-!      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: first_sgf, last_sgf, nsgf
-!      REAL(KIND=dp)                                      :: e1, det1, denom, denom2, obj_function_ispin, &
-!                                                            objf_new, objf_old, localiz_coeff, &
-!                                                            penalty_amplitude, spin_factor, &
-!                                                            grad_norm, pre_occ_vol_coeff, &
-!                                                            g1, t2, appr_sec_der, e0, g0, &
-!                                                            tempreal, step_size, beta, &
-!                                                            localization_obj_function, &
-!                                                            objf_diff, g0sign, g1sign, &
-!                                                            next_step_size_guess, &
-!                                                            line_search_error, &
-!                                                            bfgs_sum, bfgs_rho, &
-!                                                            t1, fval, penalty_func_new, &
-!                                                            localization_obj_function_ispin, &
-!                                                            penalty_func_ispin
-!      LOGICAL                                            :: prepare_to_exit, outer_prepare_to_exit, &
-!                                                            converged, line_search, &
-!                                                            reset_conjugator, just_started, &
-!                                                            d_bfgs, l_bfgs
-!      INTEGER                                            :: unit_nr, handle, idim0, reim, nspins, &
-!                                                            ispin, dim_op, prec_type, &
-!                                                            line_search_iteration, max_iter, &
-!                                                            outer_max_iter, &
-!                                                            outer_iteration, iteration, &
-!                                                            cg_iteration, para_group, ielem, &
-!                                                            linear_search_type, natom, iatom, &
-!                                                            isgf, ncol
-!      TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
-!      TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
-!      TYPE(lbfgs_history_type)                           :: nlmo_lbfgs_history
-!
-!      CALL timeset(routineN, handle)
-!
-!      ! get a useful output_unit
-!      logger => cp_get_default_logger()
-!      IF (logger%para_env%mepos == logger%para_env%source) THEN
-!         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
-!      ELSE
-!         unit_nr = -1
-!      ENDIF
-!
-!      nspins = SIZE(matrix_mo_in)
-!
-!      IF (unit_nr > 0) THEN
-!         WRITE (unit_nr, *)
-!         IF (.NOT. virtuals) THEN
-!            WRITE (unit_nr, '(T2,A,A,A)') REPEAT("-", 24), &
-!               " Optimization of occupied NLMOs ", REPEAT("-", 23)
-!         ELSE
-!            WRITE (unit_nr, '(T2,A,A,A)') REPEAT("-", 24), &
-!               " Optimization of virtual NLMOs ", REPEAT("-", 24)
-!         ENDIF
-!         WRITE (unit_nr, *)
-!         CALL trust_r_report(unit_nr, &
-!                             iter_type=0, & ! print header, all values are ignored
-!                             iteration=0, &
-!                             radius=0.0_dp, &
-!                             loss=0.0_dp, &
-!                             delta_loss=0.0_dp, &
-!                             grad_norm=0.0_dp, &
-!                             predicted_reduction=0.0_dp, &
-!                             rho=0.0_dp, &
-!                             new=.TRUE., &
-!                             time=0.0_dp)
-!         WRITE (unit_nr, '(T2,A13,A6,A23,A14,A14,A9)') "Method", "Iter", &
-!            "Objective Function", "Change", "Convergence", "Time"
-!      ENDIF
-!
-!      t1outer = m_walltime()
-!
-!      NULLIFY (particle_set)
-!
-!      CALL get_qs_env(qs_env=qs_env, &
-!                      matrix_s=qs_matrix_s, &
-!                      cell=cell, &
-!                      particle_set=particle_set, &
-!                      qs_kind_set=qs_kind_set)
-!
-!      natom = SIZE(particle_set, 1)
-!      ALLOCATE (first_sgf(natom))
-!      ALLOCATE (last_sgf(natom))
-!      ALLOCATE (nsgf(natom))
-!      !   construction of
-!      CALL get_particle_set(particle_set, qs_kind_set, &
-!              first_sgf=first_sgf, last_sgf=last_sgf, nsgf=nsgf)
-!
-!      ! m_theta contains a set of variational parameters
-!      ! that define one-electron orbitals
-!      ALLOCATE(m_theta(nspins))
-!      DO ispin = 1, nspins
-!         CALL dbcsr_create(m_theta(ispin), &
-!                           template=template_matrix_sigma(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         ! create initial guess for the main variable - identity matrix
-!         CALL dbcsr_set(m_theta(ispin), 0.0_dp)
-!         CALL dbcsr_add_on_diag(m_theta(ispin), 1.0_dp)
-!      ENDDO
-!
-!      SELECT CASE (optimizer%opt_penalty%operator_type)
-!
-!      CASE (op_loc_berry)
-!
-!         IF (cell%orthorhombic) THEN
-!            dim_op = 3
-!         ELSE
-!            dim_op = 6
-!         END IF
-!         ALLOCATE(weights(6))
-!         weights=0.0_dp
-!         CALL initialize_weights(cell, weights)
-!         ALLOCATE(op_sm_set_qs(2, dim_op))
-!         ALLOCATE(op_sm_set_almo(2, dim_op))
-!         ! allocate space for T0^t.B.T0
-!         ALLOCATE(m_B0(2, dim_op, nspins))
-!         DO idim0 = 1, dim_op
-!            DO reim = 1, SIZE(op_sm_set_qs, 1)
-!               NULLIFY(op_sm_set_qs(reim, idim0)%matrix, op_sm_set_almo(reim, idim0)%matrix)
-!               ALLOCATE(op_sm_set_qs(reim, idim0)%matrix)
-!               ALLOCATE(op_sm_set_almo(reim, idim0)%matrix)
-!               CALL dbcsr_copy(op_sm_set_qs(reim, idim0)%matrix, qs_matrix_s(1)%matrix, &
-!                  name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
-!               CALL dbcsr_set(op_sm_set_qs(reim, idim0)%matrix, 0.0_dp)
-!               CALL dbcsr_copy(op_sm_set_almo(reim, idim0)%matrix, matrix_s, &
-!                  name="almo_scf_env%op_sm_"//TRIM(ADJUSTL(cp_to_string(reim)))//"-"//TRIM(ADJUSTL(cp_to_string(idim0))))
-!               CALL dbcsr_set(op_sm_set_almo(reim, idim0)%matrix, 0.0_dp)
-!               DO ispin = 1, nspins
-!                  CALL dbcsr_create(m_B0(reim,idim0,ispin), &
-!                                    template=m_theta(ispin), &
-!                                    matrix_type=dbcsr_type_no_symmetry)
-!                  CALL dbcsr_set(m_B0(reim, idim0, ispin), 0.0_dp)
-!               ENDDO
-!            ENDDO
-!         ENDDO
-!
-!         CALL compute_berry_operator(qs_env, cell, op_sm_set_qs, dim_op)
-!
-!      CASE (op_loc_pipek)
-!
-!         dim_op = natom
-!         ALLOCATE(weights(dim_op))
-!         weights=1.0_dp
-!
-!         ALLOCATE(m_B0(1, dim_op, nspins))
-!         !m_B0 first dim is 1 now!
-!         DO idim0 = 1, dim_op
-!            DO reim = 1, 1 !SIZE(op_sm_set_qs, 1)
-!               DO ispin = 1, nspins
-!                  CALL dbcsr_create(m_B0(reim,idim0,ispin), &
-!                                    template=m_theta(ispin), &
-!                                    matrix_type=dbcsr_type_no_symmetry)
-!                  CALL dbcsr_set(m_B0(reim, idim0, ispin), 0.0_dp)
-!               ENDDO
-!            ENDDO
-!         ENDDO
-!
-!      END SELECT
-!
-!      ! penalty amplitude adjusts the strenght of volume conservation
-!      penalty_amplitude=optimizer%opt_penalty%penalty_strength
-!      !penalty_occ_vol = ( optimizer%opt_penalty%occ_vol_method .NE. penalty_type_none )
-!      !penalty_local = ( optimizer%opt_penalty%occ_loc_method .NE. penalty_type_none )
-!
-!      ! preconditioner control
-!      prec_type = optimizer%preconditioner
-!
-!      ! use diagonal BFGS if preconditioner is set
-!      d_bfgs = .FALSE.
-!      l_bfgs = .FALSE.
-!      IF (prec_type .NE. xalmo_prec_zero) l_bfgs = .TRUE.
-!      IF (l_bfgs .AND. (optimizer%conjugator .NE. cg_zero) ) THEN
-!         CPABORT("Cannot use conjugators with BFGS")
-!      ENDIF
-!      IF (l_bfgs) THEN
-!         CALL lbfgs_create(nlmo_lbfgs_history,nspins,nstore=10)
-!      ENDIF
-!
-!      IF (nspins == 1) THEN
-!         spin_factor = 2.0_dp
-!      ELSE
-!         spin_factor = 1.0_dp
-!      ENDIF
-!
-!      ALLOCATE(grad_norm_spin(nspins))
-!      ALLOCATE(nocc(nspins))
-!      ALLOCATE(penalty_vol_prefactor(nspins))
-!      ALLOCATE(suggested_vol_penalty(nspins))
-!
-!      ! create a local copy of matrix_mo_in because
-!      ! matrix_mo_in and matrix_mo_out can be the same matrix
-!      ! we need to make sure data in matrix_mo_in is intact
-!      ! after we start writing to matrix_mo_out
-!      ALLOCATE(m_t_mo_local(nspins))
-!      DO ispin = 1, nspins
-!         CALL dbcsr_create(m_t_mo_local(ispin), &
-!                           template=matrix_mo_in(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_copy(m_t_mo_local(ispin), matrix_mo_in(ispin))
-!      ENDDO
-!
-!      ALLOCATE(approx_inv_hessian(nspins))
-!      ALLOCATE(m_theta_normalized(nspins))
-!      ALLOCATE(prev_m_theta(nspins))
-!      ALLOCATE(m_S0(nspins))
-!      ALLOCATE(prev_grad(nspins))
-!      ALLOCATE(grad(nspins))
-!      ALLOCATE(prev_step(nspins))
-!      ALLOCATE(step(nspins))
-!      ALLOCATE(prev_minus_prec_grad(nspins))
-!      ALLOCATE(m_sig_sqrti_ii(nspins))
-!      ALLOCATE(m_sigma(nspins))
-!      ALLOCATE(m_siginv(nspins))
-!      ALLOCATE(tempNOcc1(nspins))
-!      ALLOCATE(tempOccOcc1(nspins))
-!      ALLOCATE(tempOccOcc2(nspins))
-!      ALLOCATE(tempOccOcc3(nspins))
-!      ALLOCATE(bfgs_y(nspins))
-!      ALLOCATE(bfgs_s(nspins))
-!
-!      DO ispin = 1, nspins
-!
-!         ! init temporary storage
-!         CALL dbcsr_create(tempNOcc1(ispin), &
-!                           template=matrix_mo_out(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(approx_inv_hessian(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_theta_normalized(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(prev_m_theta(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_S0(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(prev_grad(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(grad(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(prev_step(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(step(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(prev_minus_prec_grad(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_sig_sqrti_ii(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_sigma(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_siginv(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(tempOccOcc1(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(tempOccOcc2(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(tempOccOcc3(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(bfgs_s(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(bfgs_y(ispin), &
-!                           template=m_theta(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!
-!         CALL dbcsr_set(step(ispin), 0.0_dp)
-!         CALL dbcsr_set(prev_step(ispin),0.0_dp)
-!
-!         CALL dbcsr_get_info(template_matrix_sigma(ispin), &
-!                 nfullrows_total = nocc(ispin) )
-!
-!         penalty_vol_prefactor(ispin) = -penalty_amplitude !KEEP: * spin_factor * nocc(ispin)
-!
-!         ! compute m_S0=T0^t.S.T0
-!         CALL dbcsr_multiply("N", "N", 1.0_dp, &
-!                 matrix_s, &
-!                 m_t_mo_local(ispin), &
-!                 0.0_dp, tempNOcc1(ispin), &
-!                 filter_eps=eps_filter)
-!         CALL dbcsr_multiply("T", "N", 1.0_dp, &
-!                 m_t_mo_local(ispin), &
-!                 tempNOcc1(ispin), &
-!                 0.0_dp, m_S0(ispin), &
-!                 filter_eps=eps_filter)
-!
-!         SELECT CASE (optimizer%opt_penalty%operator_type)
-!
-!         CASE (op_loc_berry)
-!
-!            ! compute m_B0=T0^t.B.T0
-!            DO idim0 = 1, SIZE(op_sm_set_qs, 2) ! this loop is over miller ind
-!
-!               DO reim = 1, SIZE(op_sm_set_qs, 1) ! this loop is over Re/Im
-!
-!                  CALL matrix_qs_to_almo(op_sm_set_qs(reim, idim0)%matrix, op_sm_set_almo(reim, idim0)%matrix, &
-!                                         mat_distr_aos, .FALSE.)
-!
-!                  CALL dbcsr_multiply("N", "N", 1.0_dp, &
-!                          op_sm_set_almo(reim, idim0)%matrix, &
-!                          m_t_mo_local(ispin), &
-!                          0.0_dp, tempNOcc1(ispin), &
-!                          filter_eps=eps_filter)
-!
-!                  CALL dbcsr_multiply("T", "N", 1.0_dp, &
-!                          m_t_mo_local(ispin), &
-!                          tempNOcc1(ispin), &
-!                          0.0_dp, m_B0(reim,idim0,ispin), &
-!                          filter_eps=eps_filter)
-!
-!                  DEALLOCATE(op_sm_set_qs(reim, idim0)%matrix)
-!                  DEALLOCATE(op_sm_set_almo(reim, idim0)%matrix)
-!
-!               ENDDO
-!
-!            ENDDO ! end loop over idim0
-!
-!         CASE (op_loc_pipek)
-!
-!            ! compute m_B0=T0^t.B.T0
-!            DO iatom = 1, natom ! this loop is over "miller" ind
-!
-!               isgf = first_sgf(iatom)
-!               ncol = nsgf(iatom)
-!
-!               CALL dbcsr_multiply("N", "N", 1.0_dp, &
-!                       matrix_s, &
-!                       m_t_mo_local(ispin), &
-!                       0.0_dp, tempNOcc1(ispin), &
-!                       filter_eps=eps_filter)
-!
-!               CALL dbcsr_multiply("T", "N", 0.5_dp, &
-!                       m_t_mo_local(ispin), &
-!                       tempNOcc1(ispin), &
-!                       0.0_dp, m_B0(1,iatom,ispin), &
-!                       first_k=isgf, last_k=isgf+ncol-1, &
-!                       filter_eps=eps_filter)
-!
-!               CALL dbcsr_multiply("N", "N", 1.0_dp, &
-!                       matrix_s, &
-!                       m_t_mo_local(ispin), &
-!                       0.0_dp, tempNOcc1(ispin), &
-!                       first_k=isgf, last_k=isgf+ncol-1, &
-!                       filter_eps=eps_filter)
-!
-!               CALL dbcsr_multiply("T", "N", 0.5_dp, &
-!                       m_t_mo_local(ispin), &
-!                       tempNOcc1(ispin), &
-!                       1.0_dp, m_B0(1,iatom,ispin), &
-!                       filter_eps=eps_filter)
-!
-!            ENDDO ! end loop over iatom
-!
-!         END SELECT
-!
-!      ENDDO ! ispin
-!
-!      IF (optimizer%opt_penalty%operator_type .EQ. op_loc_berry) THEN
-!         DEALLOCATE(op_sm_set_qs,op_sm_set_almo)
-!      ENDIF
-!
-!
-!
-!
-!
-!
-!
-!
-!
-!
-!
-!XALMO_TRUSTR
-!
-!      ALLOCATE (m_model_hessian(nspins))
-!      ALLOCATE (m_model_hessian_inv(nspins))
-!      ALLOCATE (grad(nspins))
-!      ALLOCATE (prev_step(nspins))
-!      ALLOCATE (step(nspins))
-!      ALLOCATE (m_model_r(nspins))
-!      ALLOCATE (m_model_rt(nspins))
-!      ALLOCATE (m_model_d(nspins))
-!      ALLOCATE (m_model_Bd(nspins))
-!      ALLOCATE (m_model_r_prev(nspins))
-!      ALLOCATE (m_model_rt_prev(nspins))
-!      ALLOCATE (m_theta_trial(nspins))
-!
-!      DO ispin = 1, nspins
-!
-!         ! init temporary storage
-!         CALL dbcsr_create(m_model_hessian_inv(ispin), &
-!                           template=almo_scf_env%matrix_ks(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_model_hessian(ispin), &
-!                           template=almo_scf_env%matrix_ks(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(grad(ispin), &
-!                           template=matrix_t_out(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(prev_step(ispin), &
-!                           template=matrix_t_out(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(step(ispin), &
-!                           template=matrix_t_out(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_model_r(ispin), &
-!                           template=matrix_t_out(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_model_rt(ispin), &
-!                           template=matrix_t_out(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_model_d(ispin), &
-!                           template=matrix_t_out(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_model_Bd(ispin), &
-!                           template=matrix_t_out(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_model_r_prev(ispin), &
-!                           template=matrix_t_out(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_model_rt_prev(ispin), &
-!                           template=matrix_t_out(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!         CALL dbcsr_create(m_theta_trial(ispin), &
-!                           template=matrix_t_out(ispin), &
-!                           matrix_type=dbcsr_type_no_symmetry)
-!
-!         CALL dbcsr_set(step(ispin), 0.0_dp)
-!         CALL dbcsr_set(prev_step(ispin), 0.0_dp)
-!
-!         Invert metric (sigma_0) if we have not done it yet.
-!
-!            CALL dbcsr_create(m_s_inv, &
-!                              template=almo_scf_env%matrix_s(1), &
-!                              matrix_type=dbcsr_type_no_symmetry)
-!            CALL invert_Hotelling(m_s_inv, &
-!                                  almo_scf_env%matrix_s_blk(1), &
-!                                  threshold=almo_scf_env%eps_filter, &
-!                                  filter_eps=almo_scf_env%eps_filter)
-!
-!            OR
-!
-!            ! invert S using cholesky
-!            CALL dbcsr_create(m_s_inv, &
-!                              template=almo_scf_env%matrix_s(1), &
-!                              matrix_type=dbcsr_type_no_symmetry)
-!            CALL dbcsr_desymmetrize(almo_scf_env%matrix_s(1), m_s_inv)
-!            CALL cp_dbcsr_cholesky_decompose(m_s_inv, &
-!                                             para_env=almo_scf_env%para_env, &
-!                                             blacs_env=almo_scf_env%blacs_env)
-!            CALL cp_dbcsr_cholesky_invert(m_s_inv, &
-!                                          para_env=almo_scf_env%para_env, &
-!                                          blacs_env=almo_scf_env%blacs_env, &
-!                                          upper_to_full=.TRUE.)
-!            CALL dbcsr_filter(m_s_inv, eps=almo_scf_env%eps_filter)
-!
-!      ENDDO ! ispin
-!
-!      radius_max = optimizer%max_trust_radius
-!      radius_current = MIN(optimizer%initial_trust_radius, radius_max)
-!      ! eta must be between 0 and 0.25
-!      eta = MIN(MAX(optimizer%rho_do_not_update, 0.0_dp), 0.25_dp)
-!      energy_start = 0.0_dp
-!      energy_trial = 0.0_dp
-!      penalty_start = 0.0_dp
-!      penalty_trial = 0.0_dp
-!      loss_start = 0.0_dp ! sum of the energy and penalty
-!      loss_trial = 0.0_dp
-!
-!      same_position = .FALSE.
-!
-!Stopped here
-!      ! compute the objective function
-!      CALL main_var_to_xalmos_and_loss_func( &
-!         almo_scf_env=almo_scf_env, &
-!         qs_env=qs_env, &
-!         m_main_var_in=m_theta, &
-!         m_t_out=matrix_t_out, &
-!         m_sig_sqrti_ii_out=m_sig_sqrti_ii, &
-!         energy_out=energy_start, &
-!         penalty_out=penalty_start, &
-!         m_FTsiginv_out=FTsiginv, &
-!         m_siginvTFTsiginv_out=siginvTFTsiginv, &
-!         m_ST_out=ST, &
-!         m_STsiginv0_in=STsiginv_0, &
-!         m_quench_t_in=quench_t, &
-!         domain_r_down_in=domain_r_down, &
-!         assume_t0_q0x=assume_t0_q0x, &
-!         just_started=.TRUE., &
-!         optimize_theta=optimize_theta, &
-!         normalize_orbitals=normalize_orbitals, &
-!         perturbation_only=perturbation_only, &
-!         do_penalty=penalty_occ_vol, &
-!         special_case=my_special_case)
-!      loss_start = energy_start + penalty_start
-!      IF (my_special_case .EQ. xalmo_case_block_diag) THEN
-!         almo_scf_env%almo_scf_energy = energy_start
-!      ENDIF
-!      DO ispin = 1, nspins
-!         IF (penalty_occ_vol) THEN
-!            penalty_occ_vol_g_prefactor(ispin) = &
-!               -2.0_dp*penalty_amplitude*spin_factor*nocc(ispin)
-!            penalty_occ_vol_h_prefactor(ispin) = 0.0_dp
-!         ENDIF
-!      ENDDO ! ispin
-!
-!      ! start the outer step-size-adjustment loop
-!      scf_converged = .FALSE.
-!      adjust_r_loop: DO outer_iteration = 1, optimizer%max_iter_outer_loop
-!
-!         ! start the inner fixed-radius loop
-!         border_reached = .FALSE.
-!
-!         DO ispin = 1, nspins
-!            CALL dbcsr_set(step(ispin), 0.0_dp)
-!            CALL dbcsr_filter(step(ispin), almo_scf_env%eps_filter)
-!         ENDDO
-!
-!         IF (.NOT. same_position) THEN
-!
-!            DO ispin = 1, nspins
-!
-!               IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Compute model gradient"
-!               CALL compute_gradient( &
-!                  m_grad_out=grad(ispin), &
-!                  m_ks=almo_scf_env%matrix_ks(ispin), &
-!                  m_s=almo_scf_env%matrix_s(1), &
-!                  m_t=matrix_t_out(ispin), &
-!                  m_t0=almo_scf_env%matrix_t_blk(ispin), &
-!                  m_siginv=almo_scf_env%matrix_sigma_inv(ispin), &
-!                  m_quench_t=quench_t(ispin), &
-!                  m_FTsiginv=FTsiginv(ispin), &
-!                  m_siginvTFTsiginv=siginvTFTsiginv(ispin), &
-!                  m_ST=ST(ispin), &
-!                  m_STsiginv0=STsiginv_0(ispin), &
-!                  m_theta=m_theta(ispin), &
-!                  m_sig_sqrti_ii=m_sig_sqrti_ii(ispin), &
-!                  domain_s_inv=almo_scf_env%domain_s_inv(:, ispin), &
-!                  domain_r_down=domain_r_down(:, ispin), &
-!                  cpu_of_domain=almo_scf_env%cpu_of_domain, &
-!                  domain_map=almo_scf_env%domain_map(ispin), &
-!                  assume_t0_q0x=assume_t0_q0x, &
-!                  optimize_theta=optimize_theta, &
-!                  normalize_orbitals=normalize_orbitals, &
-!                  penalty_occ_vol=penalty_occ_vol, &
-!                  penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin), &
-!                  envelope_amplitude=almo_scf_env%envelope_amplitude, &
-!                  eps_filter=almo_scf_env%eps_filter, &
-!                  spin_factor=spin_factor, &
-!                  special_case=my_special_case)
-!
-!            ENDDO ! ispin
-!
-!         ENDIF ! skip_grad
-!
-!         ! check convergence and other exit criteria
-!         DO ispin = 1, nspins
-!            CALL dbcsr_norm(grad(ispin), dbcsr_norm_maxabsnorm, &
-!                            norm_scalar=grad_norm_spin(ispin))
-!            !grad_norm_frob = dbcsr_frobenius_norm(grad(ispin)) / &
-!            !                 dbcsr_frobenius_norm(quench_t(ispin))
-!         ENDDO ! ispin
-!         grad_norm_ref = MAXVAL(grad_norm_spin)
-!
-!         t2outer = m_walltime()
-!         CALL trust_r_report(unit_nr, &
-!                             iter_type=1, & ! only some data is important
-!                             iteration=outer_iteration, &
-!                             loss=loss_start, &
-!                             delta_loss=0.0_dp, &
-!                             grad_norm=grad_norm_ref, &
-!                             predicted_reduction=0.0_dp, &
-!                             rho=0.0_dp, &
-!                             radius=radius_current, &
-!                             new=.NOT. same_position, &
-!                             time=t2outer - t1outer)
-!         t1outer = m_walltime()
-!
-!         IF (grad_norm_ref .LE. optimizer%eps_error) THEN
-!            scf_converged = .TRUE.
-!            border_reached = .FALSE.
-!            expected_reduction = 0.0_dp
-!            IF (.NOT. (optimizer%early_stopping_on .AND. outer_iteration .EQ. 1)) &
-!               EXIT adjust_r_loop
-!         ELSE
-!            scf_converged = .FALSE.
-!         ENDIF
-!
-!         DO ispin = 1, nspins
-!
-!            CALL dbcsr_copy(m_model_r(ispin), grad(ispin))
-!            CALL dbcsr_scale(m_model_r(ispin), -1.0_dp)
-!
-!            IF (my_special_case .EQ. xalmo_case_block_diag .OR. &
-!                my_special_case .EQ. xalmo_case_fully_deloc) THEN
-!
-!               IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Multiply Sinv.r"
-!               CALL dbcsr_multiply("N", "N", 1.0_dp, &
-!                                   m_s_inv, &
-!                                   m_model_r(ispin), &
-!                                   0.0_dp, m_model_rt(ispin), &
-!                                   filter_eps=almo_scf_env%eps_filter)
-!
-!            ELSE IF (my_special_case .EQ. xalmo_case_normal) THEN
-!
-!               IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Multiply Sinv_xx.r"
-!               CALL apply_domain_operators( &
-!                  matrix_in=m_model_r(ispin), &
-!                  matrix_out=m_model_rt(ispin), &
-!                  operator1=almo_scf_env%domain_s_inv(:, ispin), &
-!                  dpattern=quench_t(ispin), &
-!                  map=almo_scf_env%domain_map(ispin), &
-!                  node_of_domain=almo_scf_env%cpu_of_domain, &
-!                  my_action=0, &
-!                  filter_eps=almo_scf_env%eps_filter)
-!
-!            ELSE
-!               CPABORT("Unknown XALMO special case")
-!            ENDIF
-!
-!            CALL dbcsr_copy(m_model_d(ispin), m_model_rt(ispin))
-!
-!         ENDDO ! ispin
-!
-!         ! compute model Hessian
-!         IF (.NOT. same_position) THEN
-!
-!            SELECT CASE (prec_type)
-!            CASE (xalmo_prec_domain)
-!
-!               IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Compute model Hessian"
-!               DO ispin = 1, nspins
-!                  CALL compute_preconditioner( &
-!                     domain_prec_out=almo_scf_env%domain_preconditioner(:, ispin), &
-!                     m_prec_out=m_model_hessian(ispin), &
-!                     m_ks=almo_scf_env%matrix_ks(ispin), &
-!                     m_s=almo_scf_env%matrix_s(1), &
-!                     m_siginv=almo_scf_env%matrix_sigma_inv(ispin), &
-!                     m_quench_t=quench_t(ispin), &
-!                     m_FTsiginv=FTsiginv(ispin), &
-!                     m_siginvTFTsiginv=siginvTFTsiginv(ispin), &
-!                     m_ST=ST(ispin), &
-!                     para_env=almo_scf_env%para_env, &
-!                     blacs_env=almo_scf_env%blacs_env, &
-!                     nocc_of_domain=almo_scf_env%nocc_of_domain(:, ispin), &
-!                     domain_s_inv=almo_scf_env%domain_s_inv(:, ispin), &
-!                     domain_r_down=domain_r_down(:, ispin), &
-!                     cpu_of_domain=almo_scf_env%cpu_of_domain, &
-!                     domain_map=almo_scf_env%domain_map(ispin), &
-!                     assume_t0_q0x=.FALSE., &
-!                     penalty_occ_vol=penalty_occ_vol, &
-!                     penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin), &
-!                     eps_filter=almo_scf_env%eps_filter, &
-!                     neg_thr=0.5_dp, &
-!                     spin_factor=spin_factor, &
-!                     skip_inversion=.TRUE., &
-!                     special_case=my_special_case)
-!               ENDDO ! ispin
-!
-!            CASE DEFAULT
-!
-!               CPABORT("Unknown preconditioner")
-!
-!            END SELECT ! preconditioner type fork
-!
-!         ENDIF  ! not same position
-!
-!         ! print the header (argument values are ignored)
-!         CALL fixed_r_report(unit_nr, &
-!                             iter_type=0, &
-!                             iteration=0, &
-!                             step_size=0.0_dp, &
-!                             border_reached=.FALSE., &
-!                             curvature=0.0_dp, &
-!                             grad_norm_ratio=0.0_dp, &
-!                             time=0.0_dp)
-!
-!         IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Start inner loop"
-!
-!         t1 = m_walltime()
-!         inner_loop_success = .FALSE.
-!         ! trustr_steihaug, trustr_cauchy, trustr_dogleg
-!         fixed_r_loop: DO iteration = 1, optimizer%max_iter
-!
-!            ! Step 2. Get curvature. If negative, step to the border
-!            y_scalar = 0.0_dp
-!            DO ispin = 1, nspins
-!
-!               ! Get B.d
-!               IF (my_special_case .EQ. xalmo_case_block_diag .OR. &
-!                   my_special_case .EQ. xalmo_case_fully_deloc) THEN
-!
-!                  CALL dbcsr_multiply("N", "N", 1.0_dp, &
-!                                      m_model_hessian(ispin), &
-!                                      m_model_d(ispin), &
-!                                      0.0_dp, m_model_Bd(ispin), &
-!                                      filter_eps=almo_scf_env%eps_filter)
-!
-!               ELSE
-!
-!                  CALL apply_domain_operators( &
-!                     matrix_in=m_model_d(ispin), &
-!                     matrix_out=m_model_Bd(ispin), &
-!                     operator1=almo_scf_env%domain_preconditioner(:, ispin), &
-!                     dpattern=quench_t(ispin), &
-!                     map=almo_scf_env%domain_map(ispin), &
-!                     node_of_domain=almo_scf_env%cpu_of_domain, &
-!                     my_action=0, &
-!                     filter_eps=almo_scf_env%eps_filter)
-!
-!               ENDIF ! special case
-!
-!               ! Get y=d^T.B.d
-!               CALL dbcsr_dot(m_model_d(ispin), m_model_Bd(ispin), real_temp)
-!               y_scalar = y_scalar + real_temp
-!
-!            ENDDO ! ispin
-!            IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Curvature: ", y_scalar
-!
-!            ! step to the border
-!            IF (y_scalar .LT. 0.0_dp) THEN
-!
-!               CALL step_size_to_border( &
-!                  step_size_out=step_size, &
-!                  metric_in=almo_scf_env%matrix_s, &
-!                  position_in=step, &
-!                  direction_in=m_model_d, &
-!                  trust_radius_in=radius_current, &
-!                  quench_t_in=quench_t, &
-!                  eps_filter_in=almo_scf_env%eps_filter &
-!                  )
-!
-!               DO ispin = 1, nspins
-!                  CALL dbcsr_add(step(ispin), m_model_d(ispin), 1.0_dp, step_size)
-!               ENDDO
-!
-!               border_reached = .TRUE.
-!               inner_loop_success = .TRUE.
-!
-!               CALL predicted_reduction( &
-!                  reduction_out=expected_reduction, &
-!                  grad_in=grad, &
-!                  step_in=step, &
-!                  hess_in=m_model_hessian, &
-!                  hess_submatrix_in=almo_scf_env%domain_preconditioner, &
-!                  quench_t_in=quench_t, &
-!                  special_case=my_special_case, &
-!                  eps_filter=almo_scf_env%eps_filter, &
-!                  domain_map=almo_scf_env%domain_map, &
-!                  cpu_of_domain=almo_scf_env%cpu_of_domain &
-!                  )
-!
-!               t2 = m_walltime()
-!               CALL fixed_r_report(unit_nr, &
-!                                   iter_type=2, &
-!                                   iteration=iteration, &
-!                                   step_size=step_size, &
-!                                   border_reached=border_reached, &
-!                                   curvature=y_scalar, &
-!                                   grad_norm_ratio=expected_reduction, &
-!                                   time=t2 - t1)
-!
-!               EXIT fixed_r_loop ! the inner loop
-!
-!            ENDIF ! y is negative
-!
-!            ! Step 3. Compute the step size along the direction
-!            step_size = 0.0_dp
-!            DO ispin = 1, nspins
-!               CALL dbcsr_dot(m_model_r(ispin), m_model_rt(ispin), real_temp)
-!               step_size = step_size + real_temp
-!            ENDDO ! ispin
-!            step_size = step_size/y_scalar
-!            IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Proposed step size: ", step_size
-!
-!            ! Update the step matrix
-!            DO ispin = 1, nspins
-!               CALL dbcsr_copy(prev_step(ispin), step(ispin))
-!               CALL dbcsr_add(step(ispin), m_model_d(ispin), 1.0_dp, step_size)
-!            ENDDO
-!
-!            ! Compute step norm
-!            CALL contravariant_matrix_norm( &
-!               norm_out=step_norm, &
-!               matrix_in=step, &
-!               metric_in=almo_scf_env%matrix_s, &
-!               quench_t_in=quench_t, &
-!               eps_filter_in=almo_scf_env%eps_filter &
-!               )
-!            IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Step norm: ", step_norm
-!
-!            ! Do not step beyond the trust radius
-!            IF (step_norm .GT. radius_current) THEN
-!
-!               IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Norm is too large"
-!               CALL step_size_to_border( &
-!                  step_size_out=step_size, &
-!                  metric_in=almo_scf_env%matrix_s, &
-!                  position_in=prev_step, &
-!                  direction_in=m_model_d, &
-!                  trust_radius_in=radius_current, &
-!                  quench_t_in=quench_t, &
-!                  eps_filter_in=almo_scf_env%eps_filter &
-!                  )
-!               IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Step size to border: ", step_size
-!
-!               DO ispin = 1, nspins
-!                  CALL dbcsr_copy(step(ispin), prev_step(ispin))
-!                  CALL dbcsr_add(step(ispin), m_model_d(ispin), 1.0_dp, step_size)
-!               ENDDO
-!
-!               IF (debug_mode) THEN
-!                  ! Compute step norm
-!                  IF (unit_nr > 0) WRITE (unit_nr, *) "...Extra norm evaluation"
-!                  CALL contravariant_matrix_norm( &
-!                     norm_out=step_norm, &
-!                     matrix_in=step, &
-!                     metric_in=almo_scf_env%matrix_s, &
-!                     quench_t_in=quench_t, &
-!                     eps_filter_in=almo_scf_env%eps_filter &
-!                     )
-!                  IF (unit_nr > 0) WRITE (unit_nr, *) "...Step norm: ", step_norm
-!                  IF (unit_nr > 0) WRITE (unit_nr, *) "...Current radius: ", radius_current
-!               ENDIF
-!
-!               border_reached = .TRUE.
-!               inner_loop_success = .TRUE.
-!
-!               CALL predicted_reduction( &
-!                  reduction_out=expected_reduction, &
-!                  grad_in=grad, &
-!                  step_in=step, &
-!                  hess_in=m_model_hessian, &
-!                  hess_submatrix_in=almo_scf_env%domain_preconditioner, &
-!                  quench_t_in=quench_t, &
-!                  special_case=my_special_case, &
-!                  eps_filter=almo_scf_env%eps_filter, &
-!                  domain_map=almo_scf_env%domain_map, &
-!                  cpu_of_domain=almo_scf_env%cpu_of_domain &
-!                  )
-!
-!               t2 = m_walltime()
-!               CALL fixed_r_report(unit_nr, &
-!                                   iter_type=3, &
-!                                   iteration=iteration, &
-!                                   step_size=step_size, &
-!                                   border_reached=border_reached, &
-!                                   curvature=y_scalar, &
-!                                   grad_norm_ratio=expected_reduction, &
-!                                   time=t2 - t1)
-!
-!               EXIT fixed_r_loop ! the inner loop
-!
-!            ENDIF
-!
-!            IF (optimizer%trustr_algorithm .EQ. trustr_cauchy) THEN
-!               ! trustr_steihaug, trustr_cauchy, trustr_dogleg
-!
-!               border_reached = .FALSE.
-!               inner_loop_success = .TRUE.
-!
-!               CALL predicted_reduction( &
-!                  reduction_out=expected_reduction, &
-!                  grad_in=grad, &
-!                  step_in=step, &
-!                  hess_in=m_model_hessian, &
-!                  hess_submatrix_in=almo_scf_env%domain_preconditioner, &
-!                  quench_t_in=quench_t, &
-!                  special_case=my_special_case, &
-!                  eps_filter=almo_scf_env%eps_filter, &
-!                  domain_map=almo_scf_env%domain_map, &
-!                  cpu_of_domain=almo_scf_env%cpu_of_domain &
-!                  )
-!
-!               t2 = m_walltime()
-!               CALL fixed_r_report(unit_nr, &
-!                                   iter_type=5, & ! Cauchy point
-!                                   iteration=iteration, &
-!                                   step_size=step_size, &
-!                                   border_reached=border_reached, &
-!                                   curvature=y_scalar, &
-!                                   grad_norm_ratio=expected_reduction, &
-!                                   time=t2 - t1)
-!
-!               EXIT fixed_r_loop ! the inner loop
-!
-!            ELSE IF (optimizer%trustr_algorithm .EQ. trustr_dogleg) THEN
-!
-!               ! invert or pseudo-invert B
-!               SELECT CASE (prec_type)
-!               CASE (xalmo_prec_domain)
-!
-!                  IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Pseudo-invert model Hessian"
-!                  IF (special_case .EQ. xalmo_case_block_diag) THEN ! non-overlapping diagonal blocks
-!
-!                     DO ispin = 1, nspins
-!                        CALL pseudo_invert_diagonal_blk( &
-!                           matrix_in=m_model_hessian(ispin), &
-!                           matrix_out=m_model_hessian_inv(ispin), &
-!                           nocc=almo_scf_env%nocc_of_domain(:, ispin) &
-!                           )
-!                     ENDDO
-!
-!                  ELSE IF (special_case .EQ. xalmo_case_fully_deloc) THEN ! the entire system is a block
-!
-!                     ! invert using cholesky decomposition
-!                     DO ispin = 1, nspins
-!                        CALL dbcsr_copy(m_model_hessian_inv(ispin), &
-!                                        m_model_hessian(ispin))
-!                        CALL cp_dbcsr_cholesky_decompose(m_model_hessian_inv(ispin), &
-!                                                         para_env=almo_scf_env%para_env, &
-!                                                         blacs_env=almo_scf_env%blacs_env)
-!                        CALL cp_dbcsr_cholesky_invert(m_model_hessian_inv(ispin), &
-!                                                      para_env=almo_scf_env%para_env, &
-!                                                      blacs_env=almo_scf_env%blacs_env, &
-!                                                      upper_to_full=.TRUE.)
-!                        CALL dbcsr_filter(m_model_hessian_inv(ispin), &
-!                                          eps=almo_scf_env%eps_filter)
-!                     ENDDO
-!
-!                  ELSE
-!
-!                     DO ispin = 1, nspins
-!                        CALL construct_domain_preconditioner( &
-!                           matrix_main=m_model_hessian(ispin), &
-!                           subm_s_inv=almo_scf_env%domain_s_inv(:, ispin), &
-!                           subm_r_down=domain_r_down(:, ispin), &
-!                           matrix_trimmer=quench_t(ispin), &
-!                           dpattern=quench_t(ispin), &
-!                           map=almo_scf_env%domain_map(ispin), &
-!                           node_of_domain=almo_scf_env%cpu_of_domain, &
-!                           preconditioner=domain_model_hessian_inv(:, ispin), &
-!                           use_trimmer=.FALSE., &
-!                           my_action=0, & ! do not do domain (1-r0) projection
-!                           skip_inversion=.FALSE. &
-!                           )
-!                     ENDDO
-!
-!                  ENDIF ! special_case
-!
-!                  ! slower but more reliable way to get inverted hessian
-!                  !DO ispin = 1, nspins
-!                  !   CALL compute_preconditioner( &
-!                  !      domain_prec_out=domain_model_hessian_inv(:, ispin), &
-!                  !      m_prec_out=m_model_hessian_inv(ispin), & ! RZK-warning: this one is not inverted if DOMAINs
-!                  !      m_ks=almo_scf_env%matrix_ks(ispin), &
-!                  !      m_s=almo_scf_env%matrix_s(1), &
-!                  !      m_siginv=almo_scf_env%matrix_sigma_inv(ispin), &
-!                  !      m_quench_t=quench_t(ispin), &
-!                  !      m_FTsiginv=FTsiginv(ispin), &
-!                  !      m_siginvTFTsiginv=siginvTFTsiginv(ispin), &
-!                  !      m_ST=ST(ispin), &
-!                  !      para_env=almo_scf_env%para_env, &
-!                  !      blacs_env=almo_scf_env%blacs_env, &
-!                  !      nocc_of_domain=almo_scf_env%nocc_of_domain(:, ispin), &
-!                  !      domain_s_inv=almo_scf_env%domain_s_inv(:, ispin), &
-!                  !      domain_r_down=domain_r_down(:, ispin), &
-!                  !      cpu_of_domain=almo_scf_env%cpu_of_domain, &
-!                  !      domain_map=almo_scf_env%domain_map(ispin), &
-!                  !      assume_t0_q0x=.FALSE., &
-!                  !      penalty_occ_vol=penalty_occ_vol, &
-!                  !      penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin), &
-!                  !      eps_filter=almo_scf_env%eps_filter, &
-!                  !      neg_thr=1.0E10_dp, &
-!                  !      spin_factor=spin_factor, &
-!                  !      skip_inversion=.FALSE., &
-!                  !      special_case=my_special_case)
-!                  !ENDDO ! ispin
-!
-!               CASE DEFAULT
-!
-!                  CPABORT("Unknown preconditioner")
-!
-!               END SELECT ! preconditioner type fork
-!
-!               ! get pB = Binv.m_model_r = -Binv.grad
-!               DO ispin = 1, nspins
-!
-!                  ! Get B.d
-!                  IF (my_special_case .EQ. xalmo_case_block_diag .OR. &
-!                      my_special_case .EQ. xalmo_case_fully_deloc) THEN
-!
-!                     CALL dbcsr_multiply("N", "N", 1.0_dp, &
-!                                         m_model_hessian_inv(ispin), &
-!                                         m_model_r(ispin), &
-!                                         0.0_dp, m_model_Bd(ispin), &
-!                                         filter_eps=almo_scf_env%eps_filter)
-!
-!                  ELSE
-!
-!                     CALL apply_domain_operators( &
-!                        matrix_in=m_model_r(ispin), &
-!                        matrix_out=m_model_Bd(ispin), &
-!                        operator1=domain_model_hessian_inv(:, ispin), &
-!                        dpattern=quench_t(ispin), &
-!                        map=almo_scf_env%domain_map(ispin), &
-!                        node_of_domain=almo_scf_env%cpu_of_domain, &
-!                        my_action=0, &
-!                        filter_eps=almo_scf_env%eps_filter)
-!
-!                  ENDIF ! special case
-!
-!               ENDDO ! ispin
-!
-!               ! Compute norm of pB
-!               CALL contravariant_matrix_norm( &
-!                  norm_out=step_norm, &
-!                  matrix_in=m_model_Bd, &
-!                  metric_in=almo_scf_env%matrix_s, &
-!                  quench_t_in=quench_t, &
-!                  eps_filter_in=almo_scf_env%eps_filter &
-!                  )
-!               IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...pB norm: ", step_norm
-!
-!               ! Do not step beyond the trust radius
-!               IF (step_norm .LE. radius_current) THEN
-!
-!                  IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Full dogleg"
-!
-!                  border_reached = .FALSE.
-!
-!                  DO ispin = 1, nspins
-!                     CALL dbcsr_copy(step(ispin), m_model_Bd(ispin))
-!                  ENDDO
-!
-!                  fake_step_size_to_report = 2.0_dp
-!                  iteration_type_to_report = 6
-!
-!               ELSE ! take a shorter dogleg step
-!
-!                  IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...pB norm is too large"
-!
-!                  border_reached = .TRUE.
-!
-!                  ! compute the dogleg vector = pB - pU
-!                  ! this destroys -Binv.grad content
-!                  DO ispin = 1, nspins
-!                     CALL dbcsr_add(m_model_Bd(ispin), step(ispin), 1.0_dp, -1.0_dp)
-!                  ENDDO
-!
-!                  CALL step_size_to_border( &
-!                     step_size_out=step_size, &
-!                     metric_in=almo_scf_env%matrix_s, &
-!                     position_in=step, &
-!                     direction_in=m_model_Bd, &
-!                     trust_radius_in=radius_current, &
-!                     quench_t_in=quench_t, &
-!                     eps_filter_in=almo_scf_env%eps_filter &
-!                     )
-!                  IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Step size to border: ", step_size
-!                  IF (step_size .GE. 1.0_dp .OR. step_size .LE. 0.0_dp) THEN
-!                     CPABORT("Wrong dog-leg step, should not be here")
-!                  ENDIF
-!
-!                  DO ispin = 1, nspins
-!                     CALL dbcsr_add(step(ispin), m_model_Bd(ispin), 1.0_dp, step_size)
-!                  ENDDO
-!
-!                  fake_step_size_to_report = 1.0_dp + step_size
-!                  iteration_type_to_report = 7
-!
-!               ENDIF ! full or partial dogleg?
-!
-!               IF (debug_mode) THEN
-!                  ! Compute step norm
-!                  IF (unit_nr > 0) WRITE (unit_nr, *) "...Extra norm evaluation"
-!                  CALL contravariant_matrix_norm( &
-!                     norm_out=step_norm, &
-!                     matrix_in=step, &
-!                     metric_in=almo_scf_env%matrix_s, &
-!                     quench_t_in=quench_t, &
-!                     eps_filter_in=almo_scf_env%eps_filter &
-!                     )
-!                  IF (unit_nr > 0) WRITE (unit_nr, *) "...Step norm: ", step_norm
-!                  IF (unit_nr > 0) WRITE (unit_nr, *) "...Current radius: ", radius_current
-!               ENDIF
-!
-!               CALL predicted_reduction( &
-!                  reduction_out=expected_reduction, &
-!                  grad_in=grad, &
-!                  step_in=step, &
-!                  hess_in=m_model_hessian, &
-!                  hess_submatrix_in=almo_scf_env%domain_preconditioner, &
-!                  quench_t_in=quench_t, &
-!                  special_case=my_special_case, &
-!                  eps_filter=almo_scf_env%eps_filter, &
-!                  domain_map=almo_scf_env%domain_map, &
-!                  cpu_of_domain=almo_scf_env%cpu_of_domain &
-!                  )
-!
-!               inner_loop_success = .TRUE.
-!
-!               t2 = m_walltime()
-!               CALL fixed_r_report(unit_nr, &
-!                                   iter_type=iteration_type_to_report, &
-!                                   iteration=iteration, &
-!                                   step_size=fake_step_size_to_report, &
-!                                   border_reached=border_reached, &
-!                                   curvature=y_scalar, &
-!                                   grad_norm_ratio=expected_reduction, &
-!                                   time=t2 - t1)
-!
-!               EXIT fixed_r_loop ! the inner loop
-!
-!            ENDIF ! Non-iterative subproblem methods exit here
-!
-!            ! Step 4: update model gradient
-!            DO ispin = 1, nspins
-!               ! save previous data
-!               CALL dbcsr_copy(m_model_r_prev(ispin), m_model_r(ispin))
-!               CALL dbcsr_add(m_model_r(ispin), m_model_Bd(ispin), &
-!                              1.0_dp, -step_size)
-!            ENDDO ! ispin
-!
-!            ! Model grad norm
-!            DO ispin = 1, nspins
-!               CALL dbcsr_norm(m_model_r(ispin), dbcsr_norm_maxabsnorm, &
-!                               norm_scalar=grad_norm_spin(ispin))
-!               !grad_norm_frob = dbcsr_frobenius_norm(grad(ispin)) / &
-!               !                 dbcsr_frobenius_norm(quench_t(ispin))
-!            ENDDO ! ispin
-!            model_grad_norm = MAXVAL(grad_norm_spin)
-!
-!            ! Check norm reduction
-!            grad_norm_ratio = model_grad_norm/grad_norm_ref
-!            IF (grad_norm_ratio .LT. optimizer%model_grad_norm_ratio) THEN
-!
-!               border_reached = .FALSE.
-!               inner_loop_success = .TRUE.
-!
-!               CALL predicted_reduction( &
-!                  reduction_out=expected_reduction, &
-!                  grad_in=grad, &
-!                  step_in=step, &
-!                  hess_in=m_model_hessian, &
-!                  hess_submatrix_in=almo_scf_env%domain_preconditioner, &
-!                  quench_t_in=quench_t, &
-!                  special_case=my_special_case, &
-!                  eps_filter=almo_scf_env%eps_filter, &
-!                  domain_map=almo_scf_env%domain_map, &
-!                  cpu_of_domain=almo_scf_env%cpu_of_domain &
-!                  )
-!
-!               t2 = m_walltime()
-!               CALL fixed_r_report(unit_nr, &
-!                                   iter_type=4, &
-!                                   iteration=iteration, &
-!                                   step_size=step_size, &
-!                                   border_reached=border_reached, &
-!                                   curvature=y_scalar, &
-!                                   grad_norm_ratio=expected_reduction, &
-!                                   time=t2 - t1)
-!
-!               EXIT fixed_r_loop ! the inner loop
-!
-!            ENDIF
-!
-!            ! Step 5: update model direction
-!            DO ispin = 1, nspins
-!               ! save previous data
-!               CALL dbcsr_copy(m_model_rt_prev(ispin), m_model_rt(ispin))
-!            ENDDO ! ispin
-!
-!            DO ispin = 1, nspins
-!
-!               IF (my_special_case .EQ. xalmo_case_block_diag .OR. &
-!                   my_special_case .EQ. xalmo_case_fully_deloc) THEN
-!
-!                  CALL dbcsr_multiply("N", "N", 1.0_dp, &
-!                                      m_s_inv, &
-!                                      m_model_r(ispin), &
-!                                      0.0_dp, m_model_rt(ispin), &
-!                                      filter_eps=almo_scf_env%eps_filter)
-!
-!               ELSE IF (my_special_case .EQ. xalmo_case_normal) THEN
-!
-!                  CALL apply_domain_operators( &
-!                     matrix_in=m_model_r(ispin), &
-!                     matrix_out=m_model_rt(ispin), &
-!                     operator1=almo_scf_env%domain_s_inv(:, ispin), &
-!                     dpattern=quench_t(ispin), &
-!                     map=almo_scf_env%domain_map(ispin), &
-!                     node_of_domain=almo_scf_env%cpu_of_domain, &
-!                     my_action=0, &
-!                     filter_eps=almo_scf_env%eps_filter)
-!
-!               ENDIF
-!
-!            ENDDO ! ispin
-!
-!            CALL compute_cg_beta( &
-!               beta=beta, &
-!               reset_conjugator=reset_conjugator, &
-!               conjugator=optimizer%conjugator, &
-!               grad=m_model_r(:), &
-!               prev_grad=m_model_r_prev(:), &
-!               step=m_model_rt(:), &
-!               prev_step=m_model_rt_prev(:) &
-!               )
-!
-!            DO ispin = 1, nspins
-!               ! update direction
-!               CALL dbcsr_add(m_model_d(ispin), m_model_rt(ispin), beta, 1.0_dp)
-!            ENDDO ! ispin
-!
-!            t2 = m_walltime()
-!            CALL fixed_r_report(unit_nr, &
-!                                iter_type=1, &
-!                                iteration=iteration, &
-!                                step_size=step_size, &
-!                                border_reached=border_reached, &
-!                                curvature=y_scalar, &
-!                                grad_norm_ratio=grad_norm_ratio, &
-!                                time=t2 - t1)
-!            t1 = m_walltime()
-!
-!         ENDDO fixed_r_loop
-!         !!!! done with the inner loop
-!         ! the inner loop must return: step, predicted reduction,
-!         ! whether it reached the border and completed successfully
-!
-!         IF (.NOT. inner_loop_success) THEN
-!            CPABORT("Inner loop did not produce solution")
-!         ENDIF
-!
-!         DO ispin = 1, nspins
-!
-!            CALL dbcsr_copy(m_theta_trial(ispin), m_theta(ispin))
-!            CALL dbcsr_add(m_theta_trial(ispin), step(ispin), 1.0_dp, 1.0_dp)
-!
-!         ENDDO ! ispin
-!
-!         ! compute the energy
-!         !IF (.NOT. same_position) THEN
-!         CALL main_var_to_xalmos_and_loss_func( &
-!            almo_scf_env=almo_scf_env, &
-!            qs_env=qs_env, &
-!            m_main_var_in=m_theta_trial, &
-!            m_t_out=matrix_t_out, &
-!            m_sig_sqrti_ii_out=m_sig_sqrti_ii, &
-!            energy_out=energy_trial, &
-!            penalty_out=penalty_trial, &
-!            m_FTsiginv_out=FTsiginv, &
-!            m_siginvTFTsiginv_out=siginvTFTsiginv, &
-!            m_ST_out=ST, &
-!            m_STsiginv0_in=STsiginv_0, &
-!            m_quench_t_in=quench_t, &
-!            domain_r_down_in=domain_r_down, &
-!            assume_t0_q0x=assume_t0_q0x, &
-!            just_started=.FALSE., &
-!            optimize_theta=optimize_theta, &
-!            normalize_orbitals=normalize_orbitals, &
-!            perturbation_only=perturbation_only, &
-!            do_penalty=penalty_occ_vol, &
-!            special_case=my_special_case)
-!         loss_trial = energy_trial + penalty_trial
-!         !ENDIF ! not same_position
-!
-!         rho = (loss_trial - loss_start)/expected_reduction
-!         loss_change_to_report = loss_trial - loss_start
-!
-!         IF (rho < 0.25_dp) THEN
-!            radius_current = 0.25_dp*radius_current
-!         ELSE
-!            IF (rho > 0.75_dp .AND. border_reached) THEN
-!               radius_current = MIN(2.0_dp*radius_current, radius_max)
-!            ENDIF
-!         ENDIF ! radius adjustment
-!
-!         IF (rho > eta) THEN
-!            DO ispin = 1, nspins
-!               CALL dbcsr_copy(m_theta(ispin), m_theta_trial(ispin))
-!            ENDDO ! ispin
-!            loss_start = loss_trial
-!            energy_start = energy_trial
-!            penalty_start = penalty_trial
-!            same_position = .FALSE.
-!            IF (my_special_case .EQ. xalmo_case_block_diag) THEN
-!               almo_scf_env%almo_scf_energy = energy_trial
-!            ENDIF
-!         ELSE
-!            same_position = .TRUE.
-!            IF (my_special_case .EQ. xalmo_case_block_diag) THEN
-!               almo_scf_env%almo_scf_energy = energy_start
-!            ENDIF
-!         ENDIF ! finalize step
-!
-!         t2outer = m_walltime()
-!         CALL trust_r_report(unit_nr, &
-!                             iter_type=2, &
-!                             iteration=outer_iteration, &
-!                             loss=loss_trial, &
-!                             delta_loss=loss_change_to_report, &
-!                             grad_norm=0.0_dp, &
-!                             predicted_reduction=expected_reduction, &
-!                             rho=rho, &
-!                             radius=radius_current, &
-!                             new=.NOT. same_position, &
-!                             time=t2outer - t1outer)
-!         t1outer = m_walltime()
-!
-!      ENDDO adjust_r_loop
-!
-!      ! post SCF-loop calculations
-!      IF (scf_converged) THEN
-!
-!         CALL wrap_up_xalmo_scf( &
-!            qs_env=qs_env, &
-!            almo_scf_env=almo_scf_env, &
-!            perturbation_in=perturbation_only, &
-!            m_xalmo_in=matrix_t_out, &
-!            m_quench_in=quench_t, &
-!            energy_inout=energy_start)
-!
-!      ENDIF ! if converged
-!
-!      DO ispin = 1, nspins
-!         CALL dbcsr_release(m_model_hessian_inv(ispin))
-!         CALL dbcsr_release(m_model_hessian(ispin))
-!         CALL dbcsr_release(STsiginv_0(ispin))
-!         CALL dbcsr_release(ST(ispin))
-!         CALL dbcsr_release(FTsiginv(ispin))
-!         CALL dbcsr_release(siginvTFTsiginv(ispin))
-!         CALL dbcsr_release(prev_step(ispin))
-!         CALL dbcsr_release(grad(ispin))
-!         CALL dbcsr_release(step(ispin))
-!         CALL dbcsr_release(m_theta(ispin))
-!         CALL dbcsr_release(m_sig_sqrti_ii(ispin))
-!         CALL dbcsr_release(m_model_r(ispin))
-!         CALL dbcsr_release(m_model_rt(ispin))
-!         CALL dbcsr_release(m_model_d(ispin))
-!         CALL dbcsr_release(m_model_Bd(ispin))
-!         CALL dbcsr_release(m_model_r_prev(ispin))
-!         CALL dbcsr_release(m_model_rt_prev(ispin))
-!         CALL dbcsr_release(m_theta_trial(ispin))
-!         CALL release_submatrices(domain_r_down(:, ispin))
-!         CALL release_submatrices(domain_model_hessian_inv(:, ispin))
-!      ENDDO ! ispin
-!
-!      DEALLOCATE (m_model_hessian)
-!      DEALLOCATE (m_model_hessian_inv)
-!      DEALLOCATE (siginvTFTsiginv)
-!      DEALLOCATE (STsiginv_0)
-!      DEALLOCATE (FTsiginv)
-!      DEALLOCATE (ST)
-!      DEALLOCATE (grad)
-!      DEALLOCATE (prev_step)
-!      DEALLOCATE (step)
-!      DEALLOCATE (m_sig_sqrti_ii)
-!      DEALLOCATE (m_model_r)
-!      DEALLOCATE (m_model_rt)
-!      DEALLOCATE (m_model_d)
-!      DEALLOCATE (m_model_Bd)
-!      DEALLOCATE (m_model_r_prev)
-!      DEALLOCATE (m_model_rt_prev)
-!      DEALLOCATE (m_theta_trial)
-!
-!      DEALLOCATE (domain_r_down)
-!      DEALLOCATE (domain_model_hessian_inv)
-!
-!      DEALLOCATE (penalty_occ_vol_g_prefactor)
-!      DEALLOCATE (penalty_occ_vol_h_prefactor)
-!      DEALLOCATE (grad_norm_spin)
-!      DEALLOCATE (nocc)
-!
-!      DEALLOCATE (m_theta)
-!
-!      IF (.NOT. scf_converged .AND. .NOT. optimizer%early_stopping_on) THEN
-!         CPABORT("Optimization not converged! ")
-!      ENDIF
-!
-!      CALL timestop(handle)
-!
-!   END SUBROUTINE construct_nlmos_trustr
 
 ! **************************************************************************************************
 !> \brief Optimization of ALMOs using trust region minimizers
