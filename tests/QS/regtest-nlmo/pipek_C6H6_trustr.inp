@@ -27,7 +27,7 @@
       XALMO_TRIAL_WF             SIMPLE
       RETURN_ORTHOGONALIZED_MOS  FALSE
 
-      CONSTRUCT_NLMOS            PCG
+      CONSTRUCT_NLMOS            TRUST_REGION
       VIRTUAL_NLMOS              TRUE !FALSE
       NLMO_OPERATOR              PIPEK
       !NLMO_COMPACT_FILTER_START  1.0E-3
@@ -51,6 +51,17 @@
         LIN_SEARCH_STEP_SIZE_GUESS 0.00001
         MAX_ITER_OUTER_LOOP      5
       &END NLMO_OPTIMIZER_PCG
+
+      &NLMO_OPTIMIZER_TRUSTR
+        ALGORITHM                   CAUCHY
+        MAX_ITER_OUTER_LOOP         1000
+        EPS_ERROR                   0.05
+        CONJUGATOR                  ZERO
+        PRECONDITIONER              DEFAULT
+        ETA                         0.25
+        INITIAL_TRUST_RADIUS        0.01
+        MAX_TRUST_RADIUS            2.0
+      &END NLMO_OPTIMIZER_TRUSTR
 
       &NLMO_PENALTY
         PENALTY_STRENGTH                  0.05

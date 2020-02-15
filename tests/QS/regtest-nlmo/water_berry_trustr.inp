@@ -30,7 +30,7 @@
       ALMO_SCF_GUESS             ATOMIC
       XALMO_TRIAL_WF             SIMPLE
 
-      CONSTRUCT_NLMOS            PCG
+      CONSTRUCT_NLMOS            TRUST_REGION
       VIRTUAL_NLMOS              FALSE !TRUE
       NLMO_COMPACT_FILTER_START  1.0E-2
       NLMO_OPERATOR              BERRY
@@ -45,15 +45,16 @@
         MAX_ITER_OUTER_LOOP      10
       &END XALMO_OPTIMIZER_PCG
 
-      &NLMO_OPTIMIZER_PCG
-        MAX_ITER                 200
-        EPS_ERROR                0.001
-        CONJUGATOR               HESTENES_STIEFEL
-        PRECONDITIONER           NONE
-        LIN_SEARCH_EPS_ERROR     0.5
-        LIN_SEARCH_STEP_SIZE_GUESS 0.001
-        MAX_ITER_OUTER_LOOP      0
-      &END NLMO_OPTIMIZER_PCG
+      &NLMO_OPTIMIZER_TRUSTR
+        ALGORITHM                   CAUCHY
+        MAX_ITER_OUTER_LOOP         1000
+        EPS_ERROR                   0.001
+        CONJUGATOR                  ZERO
+        PRECONDITIONER              DEFAULT
+        ETA                         0.25
+        INITIAL_TRUST_RADIUS        0.001
+        MAX_TRUST_RADIUS            2.0
+      &END NLMO_OPTIMIZER_TRUSTR
 
       &NLMO_PENALTY
         PENALTY_STRENGTH                  0.4

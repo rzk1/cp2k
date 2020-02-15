@@ -47,10 +47,7 @@ MODULE almo_scf_types
    TYPE penalty_type
 
       REAL(KIND=dp)      :: final_determinant, penalty_strength, &
-                            determinant_tolerance, penalty_strength_dec_factor, &
-                            compactification_filter_start
-      INTEGER            :: operator_type
-      LOGICAL            :: virtual_nlmos
+                            determinant_tolerance, penalty_strength_dec_factor
 
    END TYPE penalty_type
 
@@ -77,7 +74,6 @@ MODULE almo_scf_types
                         neglect_threshold
 
       INTEGER        :: optimizer_type ! diis, pcg, etc.
-      TYPE(penalty_type)  :: opt_penalty
 
       INTEGER        :: preconditioner, & ! preconditioner type
                         conjugator, & ! conjugator type
@@ -211,7 +207,16 @@ MODULE almo_scf_types
       LOGICAL              :: s_sqrt_done
       REAL(KIND=dp)        :: almo_scf_energy
       LOGICAL              :: orthogonal_basis, fixed_mu
-      LOGICAL              :: return_orthogonalized_mos, construct_nlmos
+      LOGICAL              :: return_orthogonalized_mos
+
+      ! NLMO-related
+      INTEGER                                        :: construct_nlmos
+      LOGICAL                                        :: virtual_nlmos
+      INTEGER                                        :: nlmo_operator_type
+      REAL(KIND=dp)                                  :: nlmo_compactification_filter_start
+      TYPE(penalty_type)                             :: opt_nlmo_penalty
+      TYPE(optimizer_options_type)                   :: opt_nlmo_trustr
+      TYPE(optimizer_options_type)                   :: opt_nlmo_pcg
 
       !! Smearing control
       !! smear flag allow to retrieve eigenvalues in almo_scf with diag algorithm and create occupation-scaled ALMO orbitals
@@ -368,7 +373,6 @@ MODULE almo_scf_types
       TYPE(optimizer_options_type)                   :: opt_xalmo_diis
       TYPE(optimizer_options_type)                   :: opt_xalmo_pcg
       TYPE(optimizer_options_type)                   :: opt_xalmo_trustr
-      TYPE(optimizer_options_type)                   :: opt_nlmo_pcg
       TYPE(optimizer_options_type)                   :: opt_xalmo_newton_pcg_solver
       TYPE(optimizer_options_type)                   :: opt_k_pcg
 

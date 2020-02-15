@@ -23,7 +23,7 @@ MODULE input_cp2k_almo
         optimizer_diis, optimizer_lin_eq_pcg, optimizer_pcg, optimizer_trustr, &
         spd_inversion_dense_cholesky, spd_inversion_ls_hotelling, spd_inversion_ls_taylor, &
         trustr_cauchy, trustr_dogleg, trustr_steihaug, xalmo_prec_domain, xalmo_prec_full, &
-        xalmo_prec_zero, xalmo_trial_r0_out, xalmo_trial_simplex
+        xalmo_prec_zero, xalmo_trial_r0_out, xalmo_trial_simplex, xalmo_prec_lbfgs
    USE input_keyword_types,             ONLY: keyword_create,&
                                               keyword_release,&
                                               keyword_type
@@ -47,6 +47,7 @@ MODULE input_cp2k_almo
    INTEGER, PARAMETER, PRIVATE :: optimizer_xalmo_trustr = 4
    INTEGER, PARAMETER, PRIVATE :: optimizer_newton_pcg_solver = 5
    INTEGER, PARAMETER, PRIVATE :: optimizer_nlmo_pcg = 6
+   INTEGER, PARAMETER, PRIVATE :: optimizer_nlmo_trustr = 7
 
    PUBLIC :: create_almo_scf_section
 
@@ -73,7 +74,7 @@ CONTAINS
                           description="Settings for a class of efficient linear scaling methods based "// &
                           "on absolutely localized orbitals"// &
                           " (ALMOs). ALMO methods are currently restricted to closed-shell molecular systems.", &
-                          n_keywords=10, n_subsections=6, repeats=.FALSE., &
+                          n_keywords=15, n_subsections=9, repeats=.FALSE., &
                           citations=(/Khaliullin2013, Scheiber2018/))
 
       NULLIFY (keyword)
@@ -212,8 +213,36 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="CONSTRUCT_NLMOS", &
-                          description="Turns on post-SCF construction of NLMOs", &
-                          usage="CONSTRUCT_NLMOS .TRUE.", default_l_val=.FALSE.)
+                          description="Variable-metric post-SCF localization of orbitals.", &
+                          usage="CONSTRUCT_NLMOS TRUST_REGION", &
+                          default_i_val=almo_scf_skip, &
+                          enum_c_vals=s2a("SKIP", "PCG", "TRUST_REGION"), &
+                          enum_desc=s2a("Skip orbital localization.", &
+                                        "PCG localization controlled by NLMO_OPTIMIZER_PCG.", &
+                                        "Trust-region localization controlled by NLMO_OPTIMIZER_TRUSTR."), &
+                          enum_i_vals=(/almo_scf_skip, almo_scf_pcg, almo_scf_trustr/))
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="VIRTUAL_NLMOS", &
+                          description="In addition to occupied orbitals, localize virtual oribtals", &
+                          usage="VIRTUAL_NLMOS .TRUE.", default_l_val=.FALSE., &
+                          lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="NLMO_COMPACT_FILTER_START", &
+                          description="Set orbital coefficients with absolute value smaller than this value to zero.", &
+                          usage="NLMO_COMPACT_FILTER_START 1.e-6", default_r_val=-1.0_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="NLMO_OPERATOR", &
+                          description="Defines the spread function", &
+                          usage="NLMO_OPERATOR PIPEK", &
+                          enum_c_vals=s2a("BERRY", "PIPEK"), &
+                          enum_i_vals=(/op_loc_berry, op_loc_pipek/), &
+                          default_i_val=op_loc_berry)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -545,6 +574,16 @@ CONTAINS
       CALL section_release(subsection)
 
       NULLIFY (subsection)
+      CALL create_optimizer_section(subsection, optimizer_nlmo_trustr)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+      NULLIFY (subsection)
+      CALL create_penalty_section(subsection)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+      NULLIFY (subsection)
       CALL create_matrix_iterate_section(subsection)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
@@ -598,10 +637,6 @@ CONTAINS
                              description="Controls the PCG optimization of nonorthogonal localized MOs.", &
                              n_keywords=9, n_subsections=1, repeats=.FALSE.)
          optimizer_type = optimizer_pcg
-         NULLIFY (subsection)
-         CALL create_penalty_section(subsection)
-         CALL section_add_subsection(section, subsection)
-         CALL section_release(subsection)
       CASE (optimizer_xalmo_pcg)
          CALL section_create(section, __LOCATION__, name="XALMO_OPTIMIZER_PCG", &
                              description="Controls the PCG optimization of extended ALMOs.", &
@@ -611,13 +646,22 @@ CONTAINS
          CALL section_add_subsection(section, subsection)
          CALL section_release(subsection)
          optimizer_type = optimizer_pcg
+      CASE (optimizer_nlmo_trustr)
+         CALL section_create(section, __LOCATION__, name="NLMO_OPTIMIZER_TRUSTR", &
+                             description="Controls trust-region localization of NLMOs. "// &
+                             "Trust radius is varied in the outer loop. Once the trust radius is "// &
+                             "chosen (and fixed) the model function can be minized using varius "// &
+                             "approaches. An iterative conjugate-gradient approach is "// &
+                             "used and controled by the inner loop", &
+                             n_keywords=10, n_subsections=0, repeats=.FALSE.)
+         optimizer_type = optimizer_trustr
       CASE (optimizer_xalmo_trustr)
          CALL section_create(section, __LOCATION__, name="XALMO_OPTIMIZER_TRUSTR", &
-                             description="Controls the trust-region optimization of extended ALMOs. "// &
+                             description="Controls trust-region optimization of extended ALMOs. "// &
                              "Trust radius is varied in the outer loop. Once the trust radius is "// &
                              "chosen (and fixed) the model function can be minized using various "// &
                              "approaches. Currently, an iterative conjugate-gradient approach is "// &
-                             "used and controlled by the inner loop", &
+                             "used and controled by the inner loop", &
                              n_keywords=10, n_subsections=0, repeats=.FALSE.)
          optimizer_type = optimizer_trustr
       CASE (optimizer_newton_pcg_solver)
@@ -687,14 +731,15 @@ CONTAINS
                              description="Select a preconditioner for the conjugate gradient optimization", &
                              usage="PRECONDITIONER DOMAIN", &
                              default_i_val=xalmo_prec_domain, &
-                             enum_c_vals=s2a("NONE", "DEFAULT", "DOMAIN", "FULL"), &
+                             enum_c_vals=s2a("NONE", "DEFAULT", "DOMAIN", "FULL", "LBFGS"), &
                              enum_desc=s2a("Do not use preconditioner", &
                                            "Same as DOMAIN preconditioner", &
                                            "Invert preconditioner domain-by-domain."// &
                                            " The main component of the linear scaling algorithm", &
-                                           "Solve linear equations step=-H.grad on the entire space"), &
+                                           "Solve linear equations step=-H.grad on the entire space", &
+                                           "Use limited-memory BFGS method"), &
                              enum_i_vals=(/xalmo_prec_zero, xalmo_prec_domain, &
-                                           xalmo_prec_domain, xalmo_prec_full/))
+                                           xalmo_prec_domain, xalmo_prec_full, xalmo_prec_lbfgs/))
          CALL section_add_keyword(section, keyword)
          CALL keyword_release(keyword)
 
@@ -862,21 +907,11 @@ CONTAINS
       CPASSERT(.NOT. ASSOCIATED(section))
       NULLIFY (section)
 
-      CALL section_create(section, __LOCATION__, name="PENALTY", &
-                          description="Add penalty terms to the energy functional.", &
-                          n_keywords=3, n_subsections=0, repeats=.FALSE.)
+      CALL section_create(section, __LOCATION__, name="NLMO_PENALTY", &
+                          description="Controls the optimization of the strength of the orthogonalization penalty term.", &
+                          n_keywords=4, n_subsections=0, repeats=.FALSE.)
 
       NULLIFY (keyword)
-
-      CALL keyword_create( &
-         keyword, __LOCATION__, name="OPERATOR", &
-         description="Type of opertator which defines the spread functional", &
-         usage="OPERATOR PIPEK", &
-         enum_c_vals=s2a("BERRY", "PIPEK"), &
-         enum_i_vals=(/op_loc_berry, op_loc_pipek/), &
-         default_i_val=op_loc_berry)
-      CALL section_add_keyword(section, keyword)
-      CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="PENALTY_STRENGTH", &
                           description="Strength of the orthogonalization penalty", &
@@ -900,18 +935,6 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="FINAL_DETERMINANT", &
                           description="The final determinant that obtained after optimization.", &
                           usage="FINAL_DETERMINANT 0.1", default_r_val=0.1_dp)
-      CALL section_add_keyword(section, keyword)
-      CALL keyword_release(keyword)
-
-      CALL keyword_create(keyword, __LOCATION__, name="COMPACTIFICATION_FILTER_START", &
-                          description="Set orbital coefficients with absolute value smaller than this value to zero.", &
-                          usage="COMPACTIFICATION_FILTER_START 1.e-6", default_r_val=-1.0_dp)
-      CALL section_add_keyword(section, keyword)
-      CALL keyword_release(keyword)
-
-      CALL keyword_create(keyword, __LOCATION__, name="VIRTUAL_NLMOS", &
-                          description="Localize virtual oribtals", &
-                          usage="VIRTUAL_NLMOS .TRUE.", default_l_val=.FALSE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 

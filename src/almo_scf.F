@@ -15,9 +15,9 @@ MODULE almo_scf
                                               almo_scf_t_rescaling,&
                                               almo_scf_t_to_proj,&
                                               distribute_domains,&
-                                              orthogonalize_mos
+                                              orthogonalize_mos,&
+                                              fill_matrix_with_ones
    USE almo_scf_optimizer,              ONLY: almo_scf_block_diagonal,&
-                                              almo_scf_construct_nlmos,&
                                               almo_scf_xalmo_eigensolver,&
                                               almo_scf_xalmo_pcg,&
                                               almo_scf_xalmo_trustr
@@ -84,9 +84,7 @@ MODULE almo_scf
                                               molecule_type
    USE mscfg_types,                     ONLY: get_matrix_from_submatrices,&
                                               molecular_scf_guess_env_type
-   USE nlmo_types,                      ONLY: nlmo_env_init,&
-                                              nlmo_env_release,&
-                                              nlmo_env_type
+   USE nlmo_optimizer,                  ONLY: nlmo_optimization_entry
    USE particle_types,                  ONLY: particle_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
@@ -1406,38 +1404,14 @@ CONTAINS
          ! RZK-warning hack into the quenched routine:
          ! create a quench matrix with all-all-all blocks 1.0
          ! it is a waste of memory but since matrices are distributed
-         ! we can tolerate it for now
+         ! we can tolerate it for now.
+         ! It is also a quadratic-scaling routine but this is unavoidable.
+         ! C'est la vie
          ALLOCATE (no_quench(almo_scf_env%nspins))
          CALL dbcsr_create(no_quench(1), &
                            template=almo_scf_env%matrix_t(1), &
                            matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_get_info(no_quench(1), distribution=dist)
-         CALL dbcsr_distribution_get(dist, mynode=mynode)
-         CALL dbcsr_work_create(no_quench(1), &
-                                work_mutable=.TRUE.)
-         nblkrows_tot = dbcsr_nblkrows_total(no_quench(1))
-         nblkcols_tot = dbcsr_nblkcols_total(no_quench(1))
-         ! RZK-warning: is it a quadratic-scaling routine?
-         ! As a matter of fact it is! But this block treats
-         ! fully delocalized MOs. So it is unavoidable.
-         ! C'est la vie
-         DO row = 1, nblkrows_tot
-            DO col = 1, nblkcols_tot
-               tr = .FALSE.
-               iblock_row = row
-               iblock_col = col
-               CALL dbcsr_get_stored_coordinates(no_quench(1), &
-                                                 iblock_row, iblock_col, hold)
-               IF (hold .EQ. mynode) THEN
-                  NULLIFY (p_new_block)
-                  CALL dbcsr_reserve_block2d(no_quench(1), &
-                                             iblock_row, iblock_col, p_new_block)
-                  CPASSERT(ASSOCIATED(p_new_block))
-                  p_new_block(:, :) = 1.0_dp
-               ENDIF
-            ENDDO
-         ENDDO
-         CALL dbcsr_finalize(no_quench(1))
+         CALL fill_matrix_with_ones(no_quench(1))
          IF (almo_scf_env%nspins .GT. 1) THEN
             DO ispin = 2, almo_scf_env%nspins
                CALL dbcsr_create(no_quench(ispin), &
@@ -1692,12 +1666,11 @@ CONTAINS
 
       ! RZK-warning: this is NLMO todo list
       ! * there should be a test that shows how to print NLMO cube files
-      ! * each code feature must be tested only once. all keywords options must be demonstrated (for example, there is no file that
-      ! does virtual localization)
       ! * minus sign in lfbgs is empirically derived, check equations/code
       ! * why localization operator is specified in the penalty section and stored in the penalty part of the optimizer?
+      ! tests for with broken alpha-beta symmetry
 
-      IF (almo_scf_env%construct_nlmos) THEN
+      IF (almo_scf_env%construct_nlmos .NE. almo_scf_skip) THEN
 
          DO ispin = 1, almo_scf_env%nspins
 
@@ -1713,151 +1686,22 @@ CONTAINS
                                    max_iter_lanczos=almo_scf_env%max_iter_lanczos)
          ENDDO
 
-         CALL construct_nlmos_wrapper(qs_env, almo_scf_env, virtuals=.FALSE.)
+         CALL nlmo_optimization_entry(qs_env, almo_scf_env, &
+                                      virtuals=.FALSE.)
 
-         IF (almo_scf_env%opt_nlmo_pcg%opt_penalty%virtual_nlmos) THEN
+         IF (almo_scf_env%virtual_nlmos) THEN
             CALL construct_virtuals(almo_scf_env)
-            CALL construct_nlmos_wrapper(qs_env, almo_scf_env, virtuals=.TRUE.)
+            CALL nlmo_optimization_entry(qs_env, almo_scf_env, &
+                                         virtuals=.TRUE.)
          ENDIF
 
-         IF (almo_scf_env%opt_nlmo_pcg%opt_penalty%compactification_filter_start .GT. 0.0_dp) THEN
+         IF (almo_scf_env%nlmo_compactification_filter_start .GT. 0.0_dp) THEN
             CALL nlmo_compactification(qs_env, almo_scf_env, almo_scf_env%matrix_t)
          ENDIF
 
       ENDIF
 
    END SUBROUTINE construct_nlmos
-
-! **************************************************************************************************
-!> \brief Calls NLMO optimization
-!> \param qs_env ...
-!> \param almo_scf_env ...
-!> \param virtuals ...
-!> \par History
-!>       2019.10 created [Ziling Luo]
-!> \author Ziling Luo
-! **************************************************************************************************
-   SUBROUTINE construct_nlmos_wrapper(qs_env, almo_scf_env, virtuals)
-
-      TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(almo_scf_env_type), INTENT(INOUT)             :: almo_scf_env
-      LOGICAL, INTENT(IN)                                :: virtuals
-
-      CHARACTER(len=*), PARAMETER :: routineN = 'construct_nlmos_wrapper', &
-         routineP = moduleN//':'//routineN
-
-      CHARACTER(LEN=59)                                  :: print_string
-      INTEGER                                            :: unit_nr
-      REAL(KIND=dp)                                      :: det_diff, penalty_alpha, prev_determinant
-      TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(nlmo_env_type)                                :: nlmo_env
-
-      ! get a useful output_unit
-      logger => cp_get_default_logger()
-      IF (logger%para_env%mepos == logger%para_env%source) THEN
-         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
-      ELSE
-         unit_nr = -1
-      ENDIF
-
-      !create a print function
-      IF (unit_nr > 0) THEN
-         WRITE (unit_nr, *)
-         IF (.NOT. virtuals) THEN
-            WRITE (unit_nr, '(T2,A,A,A)') REPEAT("-", 24), &
-               " Optimization of occupied NLMOs ", REPEAT("-", 23)
-         ELSE
-            WRITE (unit_nr, '(T2,A,A,A)') REPEAT("-", 24), &
-               " Optimization of virtual NLMOs ", REPEAT("-", 24)
-         ENDIF
-         WRITE (unit_nr, '()')
-         WRITE (unit_nr, '(T2,A13,A6,A23,A14,A14,A9)') "Method", "Iter", &
-            "Objective Function", "Change", "Convergence", "Time"
-         WRITE (unit_nr, '(T2,A)') REPEAT("-", 79)
-      ENDIF
-
-      ! compute and store MO-indepedent data
-      CALL nlmo_env_init(nlmo_env=nlmo_env, &
-                         qs_env=qs_env, &
-                         loc_operator=almo_scf_env%opt_nlmo_pcg%opt_penalty%operator_type, &
-                         m_templateNN=almo_scf_env%matrix_s(1), &
-                         distr_type_AOs=almo_scf_env%mat_distr_aos, &
-                         eps_filter=almo_scf_env%eps_filter)
-
-      almo_scf_env%overlap_determinant = 1.0_dp
-
-      ! loop over the strength of the orthogonalization penalty
-      prev_determinant = 10.0_dp
-      penalty_alpha = almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength
-      DO WHILE (almo_scf_env%overlap_determinant .GT. almo_scf_env%opt_nlmo_pcg%opt_penalty%final_determinant)
-
-         IF (unit_nr > 0) THEN
-            WRITE (unit_nr, '()')
-            WRITE (unit_nr, '(T2,A)') REPEAT("-", 79)
-            print_string = "Penalty alpha (dimensionless):"
-            WRITE (unit_nr, '(T2,A59,F20.10)') print_string, penalty_alpha
-            WRITE (unit_nr, '(T2,A)') REPEAT("-", 79)
-            WRITE (unit_nr, '()')
-         ENDIF
-
-         IF (.NOT. virtuals) THEN
-            CALL almo_scf_construct_nlmos(qs_env=qs_env, &
-                                          nlmo_env=nlmo_env, &
-                                          optimizer=almo_scf_env%opt_nlmo_pcg, &
-                                          matrix_s=almo_scf_env%matrix_s(1), &
-                                          matrix_mo_inout=almo_scf_env%matrix_t, &
-                                          matrix_templateOO=almo_scf_env%matrix_sigma_inv)
-         ELSE
-            CALL almo_scf_construct_nlmos(qs_env=qs_env, &
-                                          nlmo_env=nlmo_env, &
-                                          optimizer=almo_scf_env%opt_nlmo_pcg, &
-                                          matrix_s=almo_scf_env%matrix_s(1), &
-                                          matrix_mo_inout=almo_scf_env%matrix_v, &
-                                          matrix_templateOO=almo_scf_env%matrix_sigma_vv)
-         ENDIF
-
-         ! almo_scf_env stores the largest of the determinants of the two spins
-         almo_scf_env%overlap_determinant = MAXVAL(nlmo_env%overlap_determinant)
-
-         det_diff = prev_determinant - almo_scf_env%overlap_determinant
-         nlmo_env%penalty_strength(:) = nlmo_env%penalty_strength(:)/ &
-                                        ABS(almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength_dec_factor)
-         penalty_alpha = penalty_alpha/ &
-                         ABS(almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength_dec_factor)
-
-         IF (det_diff < almo_scf_env%opt_nlmo_pcg%opt_penalty%determinant_tolerance) THEN
-            EXIT
-         ENDIF
-         prev_determinant = almo_scf_env%overlap_determinant
-
-      ENDDO
-
-      IF (unit_nr > 0) THEN
-         WRITE (unit_nr, '()')
-         WRITE (unit_nr, '(T2,A)') REPEAT("-", 79)
-
-         print_string = "Final localization:"
-         WRITE (unit_nr, '(T2,A59,F20.10)') &
-            print_string, nlmo_env%localization_component
-
-         print_string = "Final determinant (max over spins):"
-         WRITE (unit_nr, '(T2,A59,F20.10)') &
-            print_string, almo_scf_env%overlap_determinant
-
-         print_string = "Final penalty strength (max over spins, loc. units):"
-         WRITE (unit_nr, '(T2,A59,F20.10)') &
-            print_string, MAXVAL(ABS(nlmo_env%penalty_strength))
-
-         print_string = "Final penalty alpha (dimensionless):"
-         WRITE (unit_nr, '(T2,A59,F20.10)') &
-            print_string, penalty_alpha
-
-         WRITE (unit_nr, '(T2,A)') REPEAT("-", 79)
-      ENDIF
-
-      CALL nlmo_env_release(nlmo_env)
-
-   END SUBROUTINE construct_nlmos_wrapper
 
 ! **************************************************************************************************
 !> \brief Construct virtual orbitals
@@ -2067,7 +1911,7 @@ CONTAINS
             "EPS filter", "Occupation Alpha", "Occupation Beta", "Energy"
       ENDIF
 
-      eps_start = almo_scf_env%opt_nlmo_pcg%opt_penalty%compactification_filter_start
+      eps_start = almo_scf_env%nlmo_compactification_filter_start
       eps_local = MAX(eps_start, 10E-14_dp)
 
       DO
