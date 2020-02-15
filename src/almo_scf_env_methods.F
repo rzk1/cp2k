@@ -108,7 +108,7 @@ CONTAINS
       TYPE(section_vals_type), POINTER :: almo_analysis_section, almo_opt_diis_section, &
          almo_opt_pcg_section, almo_scf_section, matrix_iterate_section, nlmo_opt_pcg_section, &
          penalty_section, xalmo_opt_newton_pcg_section, xalmo_opt_pcg_section, &
-         xalmo_opt_trustr_section
+         xalmo_opt_trustr_section, nlmo_opt_trustr_section
 
       CALL timeset(routineN, handle)
 
@@ -121,6 +121,8 @@ CONTAINS
                                                           "XALMO_OPTIMIZER_PCG")
       xalmo_opt_trustr_section => section_vals_get_subs_vals(almo_scf_section, &
                                                              "XALMO_OPTIMIZER_TRUSTR")
+      nlmo_opt_trustr_section => section_vals_get_subs_vals(almo_scf_section, &
+                                                             "NLMO_OPTIMIZER_TRUSTR")
       nlmo_opt_pcg_section => section_vals_get_subs_vals(almo_scf_section, &
                                                          "NLMO_OPTIMIZER_PCG")
       almo_analysis_section => section_vals_get_subs_vals(almo_scf_section, "ANALYSIS")
@@ -128,6 +130,7 @@ CONTAINS
                                                                  "XALMO_NEWTON_PCG_SOLVER")
       matrix_iterate_section => section_vals_get_subs_vals(almo_scf_section, &
                                                            "MATRIX_ITERATE")
+      penalty_section => section_vals_get_subs_vals(almo_scf_section, "NLMO_PENALTY")
 
       ! read user input
       ! common ALMO options
@@ -155,8 +158,16 @@ CONTAINS
       almo_scf_env%xalmo_extrapolation_order = MAX(0, almo_scf_env%xalmo_extrapolation_order)
       CALL section_vals_val_get(almo_scf_section, "RETURN_ORTHOGONALIZED_MOS", &
                                 l_val=almo_scf_env%return_orthogonalized_mos)
+
+      ! These will be removed from the ALMO_SCF eventually
       CALL section_vals_val_get(almo_scf_section, "CONSTRUCT_NLMOS", &
-                                l_val=almo_scf_env%construct_nlmos)
+                                i_val=almo_scf_env%construct_nlmos)
+      CALL section_vals_val_get(almo_scf_section, "VIRTUAL_NLMOS", &
+                                l_val=almo_scf_env%virtual_nlmos)
+      CALL section_vals_val_get(almo_scf_section, "NLMO_OPERATOR", &
+                                i_val=almo_scf_env%nlmo_operator_type)
+      CALL section_vals_val_get(almo_scf_section, "NLMO_COMPACT_FILTER_START", &
+                                r_val=almo_scf_env%nlmo_compactification_filter_start)
 
       CALL section_vals_val_get(matrix_iterate_section, "EPS_LANCZOS", &
                                 r_val=almo_scf_env%eps_lanczos)
@@ -197,6 +208,33 @@ CONTAINS
                                 i_val=almo_scf_env%opt_block_diag_pcg%conjugator)
       CALL section_vals_val_get(almo_opt_pcg_section, "PRECONDITIONER", &
                                 i_val=almo_scf_env%opt_block_diag_pcg%preconditioner)
+
+      CALL section_vals_val_get(nlmo_opt_trustr_section, "EPS_ERROR", &
+                                r_val=almo_scf_env%opt_nlmo_trustr%eps_error)
+      CALL section_vals_val_get(nlmo_opt_trustr_section, "MAX_ITER", &
+                                i_val=almo_scf_env%opt_nlmo_trustr%max_iter)
+      CALL section_vals_val_get(nlmo_opt_trustr_section, "ALGORITHM", &
+                                i_val=almo_scf_env%opt_nlmo_trustr%trustr_algorithm)
+      CALL section_vals_val_get(nlmo_opt_trustr_section, "EPS_ERROR_EARLY", &
+                                r_val=almo_scf_env%opt_nlmo_trustr%eps_error_early)
+      CALL section_vals_val_get(nlmo_opt_trustr_section, "MAX_ITER_EARLY", &
+                                i_val=almo_scf_env%opt_nlmo_trustr%max_iter_early)
+      CALL section_vals_val_get(nlmo_opt_trustr_section, "MAX_ITER_OUTER_LOOP", &
+                                i_val=almo_scf_env%opt_nlmo_trustr%max_iter_outer_loop)
+      CALL section_vals_val_get(nlmo_opt_trustr_section, "ETA", &
+                                r_val=almo_scf_env%opt_nlmo_trustr%rho_do_not_update)
+      almo_scf_env%opt_nlmo_trustr%rho_do_not_update = &
+         MIN(MAX(almo_scf_env%opt_nlmo_trustr%rho_do_not_update, 0.0_dp), 0.25_dp)
+      CALL section_vals_val_get(nlmo_opt_trustr_section, "MODEL_GRAD_NORM_RATIO", &
+                                r_val=almo_scf_env%opt_nlmo_trustr%model_grad_norm_ratio)
+      CALL section_vals_val_get(nlmo_opt_trustr_section, "INITIAL_TRUST_RADIUS", &
+                                r_val=almo_scf_env%opt_nlmo_trustr%initial_trust_radius)
+      CALL section_vals_val_get(nlmo_opt_trustr_section, "MAX_TRUST_RADIUS", &
+                                r_val=almo_scf_env%opt_nlmo_trustr%max_trust_radius)
+      CALL section_vals_val_get(nlmo_opt_trustr_section, "CONJUGATOR", &
+                                i_val=almo_scf_env%opt_nlmo_trustr%conjugator)
+      CALL section_vals_val_get(nlmo_opt_trustr_section, "PRECONDITIONER", &
+                                i_val=almo_scf_env%opt_nlmo_trustr%preconditioner)
 
       CALL section_vals_val_get(xalmo_opt_trustr_section, "EPS_ERROR", &
                                 r_val=almo_scf_env%opt_xalmo_trustr%eps_error)
@@ -246,7 +284,6 @@ CONTAINS
       CALL section_vals_val_get(xalmo_opt_pcg_section, "PRECONDITIONER", &
                                 i_val=almo_scf_env%opt_xalmo_pcg%preconditioner)
 
-      penalty_section => section_vals_get_subs_vals(nlmo_opt_pcg_section, "PENALTY")
       CALL section_vals_val_get(nlmo_opt_pcg_section, "EPS_ERROR", &
                                 r_val=almo_scf_env%opt_nlmo_pcg%eps_error)
       CALL section_vals_val_get(nlmo_opt_pcg_section, "MAX_ITER", &
@@ -267,27 +304,19 @@ CONTAINS
                                 i_val=almo_scf_env%opt_nlmo_pcg%conjugator)
       CALL section_vals_val_get(nlmo_opt_pcg_section, "PRECONDITIONER", &
                                 i_val=almo_scf_env%opt_nlmo_pcg%preconditioner)
-      CALL section_vals_val_get(penalty_section, &
-                                "OPERATOR", &
-                                i_val=almo_scf_env%opt_nlmo_pcg%opt_penalty%operator_type)
+
       CALL section_vals_val_get(penalty_section, &
                                 "PENALTY_STRENGTH", &
-                                r_val=almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength)
+                                r_val=almo_scf_env%opt_nlmo_penalty%penalty_strength)
       CALL section_vals_val_get(penalty_section, &
                                 "PENALTY_STRENGTH_DECREASE_FACTOR", &
-                                r_val=almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength_dec_factor)
+                                r_val=almo_scf_env%opt_nlmo_penalty%penalty_strength_dec_factor)
       CALL section_vals_val_get(penalty_section, &
                                 "DETERMINANT_TOLERANCE", &
-                                r_val=almo_scf_env%opt_nlmo_pcg%opt_penalty%determinant_tolerance)
+                                r_val=almo_scf_env%opt_nlmo_penalty%determinant_tolerance)
       CALL section_vals_val_get(penalty_section, &
                                 "FINAL_DETERMINANT", &
-                                r_val=almo_scf_env%opt_nlmo_pcg%opt_penalty%final_determinant)
-      CALL section_vals_val_get(penalty_section, &
-                                "COMPACTIFICATION_FILTER_START", &
-                                r_val=almo_scf_env%opt_nlmo_pcg%opt_penalty%compactification_filter_start)
-      CALL section_vals_val_get(penalty_section, &
-                                "VIRTUAL_NLMOS", &
-                                l_val=almo_scf_env%opt_nlmo_pcg%opt_penalty%virtual_nlmos)
+                                r_val=almo_scf_env%opt_nlmo_penalty%final_determinant)
 
       CALL section_vals_val_get(xalmo_opt_newton_pcg_section, "EPS_ERROR", &
                                 r_val=almo_scf_env%opt_xalmo_newton_pcg_solver%eps_error)

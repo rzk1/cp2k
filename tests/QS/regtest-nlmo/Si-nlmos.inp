@@ -29,7 +29,11 @@
       DELOCALIZE_METHOD          FULL_SCF
       ALMO_SCF_GUESS             ATOMIC
       XALMO_TRIAL_WF             SIMPLE
-      CONSTRUCT_NLMOS            TRUE
+
+      CONSTRUCT_NLMOS            PCG
+      VIRTUAL_NLMOS              FALSE
+      NLMO_COMPACT_FILTER_START  1.0E-2
+      NLMO_OPERATOR              PIPEK
 
       &XALMO_OPTIMIZER_PCG
         MAX_ITER                 50
@@ -45,20 +49,18 @@
         MAX_ITER                 200
         EPS_ERROR                0.1
         CONJUGATOR               ZERO
-        PRECONDITIONER           DEFAULT
+        PRECONDITIONER           LBFGS
         LIN_SEARCH_EPS_ERROR     0.5
         LIN_SEARCH_STEP_SIZE_GUESS 0.001
         MAX_ITER_OUTER_LOOP      0
-        &PENALTY
-          OPERATOR                          PIPEK
-          PENALTY_STRENGTH                  0.01
-          DETERMINANT_TOLERANCE             1.0E-8
-          PENALTY_STRENGTH_DECREASE_FACTOR  2.0
-          FINAL_DETERMINANT                 0.6
-          COMPACTIFICATION_FILTER_START     1.0E-2
-          VIRTUAL_NLMOS                     FALSE
-        &END PENALTY
       &END NLMO_OPTIMIZER_PCG
+
+      &NLMO_PENALTY
+        PENALTY_STRENGTH                  0.01
+        DETERMINANT_TOLERANCE             1.0E-8
+        PENALTY_STRENGTH_DECREASE_FACTOR  2.0
+        FINAL_DETERMINANT                 0.6
+      &END NLMO_PENALTY
 
     &END ALMO_SCF
 

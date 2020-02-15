@@ -939,7 +939,9 @@ MODULE input_constants
                                    optimizer_lin_eq_pcg = 3
    INTEGER, PARAMETER, PUBLIC   :: xalmo_prec_zero = 0, &
                                    xalmo_prec_domain = 1, &
-                                   xalmo_prec_full = 2
+                                   xalmo_prec_full = 2, &
+                                   xalmo_prec_dbfgs = 3, &
+                                   xalmo_prec_lbfgs = 4
    INTEGER, PARAMETER, PUBLIC   :: xalmo_case_block_diag = 0, &
                                    xalmo_case_fully_deloc = 1, &
                                    xalmo_case_normal = -1
