@@ -49,6 +49,8 @@ MODULE nlmo_types
                                                             m_sigma, &
                                                             m_siginv, &
                                                             m_mo, &
+                                                            m_sigma0_thetanorm, &
+                                                            m_sigma0_thetanorm_siginv, &
                                                             m_mo_initial
 
       ! Loss function components

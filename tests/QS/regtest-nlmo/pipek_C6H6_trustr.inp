@@ -28,7 +28,7 @@
       RETURN_ORTHOGONALIZED_MOS  FALSE
 
       CONSTRUCT_NLMOS            TRUST_REGION
-      VIRTUAL_NLMOS              TRUE !FALSE
+      VIRTUAL_NLMOS              FALSE !TRUE !FALSE
       NLMO_OPERATOR              PIPEK
       !NLMO_COMPACT_FILTER_START  1.0E-3
 
@@ -44,7 +44,7 @@
 
       &NLMO_OPTIMIZER_PCG
         MAX_ITER                 200
-        EPS_ERROR                0.05
+        EPS_ERROR                0.00001
         CONJUGATOR               ZERO
         PRECONDITIONER           LBFGS
         LIN_SEARCH_EPS_ERROR     0.1
@@ -53,11 +53,12 @@
       &END NLMO_OPTIMIZER_PCG
 
       &NLMO_OPTIMIZER_TRUSTR
-        ALGORITHM                   CAUCHY
+        ALGORITHM                   CG
+        MAX_ITER                    100
         MAX_ITER_OUTER_LOOP         1000
-        EPS_ERROR                   0.05
+        EPS_ERROR                   0.00001
         CONJUGATOR                  ZERO
-        PRECONDITIONER              DEFAULT
+        PRECONDITIONER              FULL
         ETA                         0.25
         INITIAL_TRUST_RADIUS        0.01
         MAX_TRUST_RADIUS            2.0

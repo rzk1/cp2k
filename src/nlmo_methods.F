@@ -43,7 +43,7 @@ MODULE nlmo_methods
         almo_scf_diag, almo_scf_dm_sign, cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, &
         cg_hager_zhang, cg_hestenes_stiefel, cg_liu_storey, cg_polak_ribiere, cg_zero, &
         trustr_cauchy, trustr_dogleg, virt_full, xalmo_case_block_diag, xalmo_case_fully_deloc, &
-        xalmo_case_normal, xalmo_prec_domain, xalmo_prec_full, xalmo_prec_zero, op_loc_berry,&
+        xalmo_case_normal, xalmo_prec_domain, xalmo_prec_full, xalmo_prec_identity, op_loc_berry,&
         op_loc_pipek, xalmo_prec_dbfgs, xalmo_prec_lbfgs
    USE iterate_matrix,                  ONLY: determinant,&
                                               invert_Hotelling,&
@@ -83,7 +83,9 @@ MODULE nlmo_methods
              nlmo_env_deallocate_all, &
              nlmo_env_loss_hessian, &
              nlmo_env_minus_hessian_inv_apply, &
-             nlmo_env_invert_hessian
+             nlmo_env_invert_hessian, &
+             nlmo_env_hessian_apply, &
+             nlmo_env_predicted_reduction
 
 CONTAINS
 
@@ -457,6 +459,8 @@ CONTAINS
       ALLOCATE (nlmo_env%m_sig_sqrti_ii(nspins))
       ALLOCATE (nlmo_env%m_sigma(nspins))
       ALLOCATE (nlmo_env%m_siginv(nspins))
+      ALLOCATE (nlmo_env%m_sigma0_thetanorm(nspins))
+      ALLOCATE (nlmo_env%m_sigma0_thetanorm_siginv(nspins))
 
       DO ispin = 1, nspins
 
@@ -473,6 +477,12 @@ CONTAINS
                            template=templateOO(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(nlmo_env%m_sigma0(ispin), &
+                           template=templateOO(ispin), &
+                           matrix_type=dbcsr_type_no_symmetry)
+         CALL dbcsr_create(nlmo_env%m_sigma0_thetanorm(ispin), &
+                           template=templateOO(ispin), &
+                           matrix_type=dbcsr_type_no_symmetry)
+         CALL dbcsr_create(nlmo_env%m_sigma0_thetanorm_siginv(ispin), &
                            template=templateOO(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(nlmo_env%m_siginv0(ispin), &
@@ -635,6 +645,8 @@ CONTAINS
          CALL dbcsr_set_diag(nlmo_env%m_sig_sqrti_ii(ispin), diagonal)
          DEALLOCATE (diagonal)
 
+         CALL dbcsr_release(tm_OO1)
+
          CALL dbcsr_multiply("N", "N", 1.0_dp, &
                              nlmo_env%m_theta(ispin), &
                              nlmo_env%m_sig_sqrti_ii(ispin), &
@@ -648,15 +660,15 @@ CONTAINS
                              0.0_dp, nlmo_env%m_mo(ispin), &
                              filter_eps=nlmo_env%eps_filter)
 
-         ! compute sigma
+         ! sigma0.a_norm is necessary for the gradient and hessian
          CALL dbcsr_multiply("N", "N", 1.0_dp, &
                              nlmo_env%m_sigma0(ispin), &
                              nlmo_env%m_theta_normalized(ispin), &
-                             0.0_dp, tm_OO1, &
+                             0.0_dp, nlmo_env%m_sigma0_thetanorm(ispin), &
                              filter_eps=nlmo_env%eps_filter)
          CALL dbcsr_multiply("T", "N", 1.0_dp, &
                              nlmo_env%m_theta_normalized(ispin), &
-                             tm_OO1, &
+                             nlmo_env%m_sigma0_thetanorm(ispin), &
                              0.0_dp, nlmo_env%m_sigma(ispin), &
                              filter_eps=nlmo_env%eps_filter)
 
@@ -668,7 +680,13 @@ CONTAINS
             filter_eps=nlmo_env%eps_filter, &
             silent=.FALSE.)
 
-         CALL dbcsr_release(tm_OO1)
+         ! sigma0.a_norm.siginv is necessary for the gradient and hessian
+         CALL dbcsr_multiply("N", "N", &
+                             1.0_dp, &
+                             nlmo_env%m_sigma0_thetanorm(ispin), &
+                             nlmo_env%m_siginv(ispin), &
+                             0.0_dp, nlmo_env%m_sigma0_thetanorm_siginv(ispin), &
+                             filter_eps=nlmo_env%eps_filter)
 
       ENDDO ! ispin
 
@@ -895,28 +913,15 @@ CONTAINS
          ENDDO ! end loop over idim0
          DEALLOCATE (z2)
 
-         ! sigma0.a_norm is necessary for the volume penalty and normalization
-         CALL dbcsr_multiply("N", "N", &
-                             1.0_dp, &
-                             nlmo_env%m_sigma0(ispin), &
-                             nlmo_env%m_theta_normalized(ispin), &
-                             0.0_dp, m_temp_oo_2, &
-                             filter_eps=nlmo_env%eps_filter)
-
          ! add gradient of the penalty functional log[det(sigma)]
          ! G = 2*prefactor*sigma0.a_norm.sigma_inv
-         CALL dbcsr_multiply("N", "N", &
-                             1.0_dp, &
-                             m_temp_oo_2, &
-                             nlmo_env%m_siginv(ispin), &
-                             0.0_dp, m_temp_oo_3, &
-                             filter_eps=nlmo_env%eps_filter)
-         !CALL dbcsr_norm(m_temp_oo_3, &
+         !CALL dbcsr_norm(nlmo_env%m_sigma0_thetanorm_siginv(ispin), &
          !                dbcsr_norm_maxabsnorm, norm_scalar=norm_vol)
          !CALL dbcsr_norm(m_temp_oo_1, &
          !                dbcsr_norm_maxabsnorm, norm_scalar=norm_loc)
          !suggested_vol_penalty(ispin) = norm_loc/norm_vol
-         CALL dbcsr_add(m_temp_oo_1, m_temp_oo_3, &
+         CALL dbcsr_add(m_temp_oo_1, &
+                        nlmo_env%m_sigma0_thetanorm_siginv(ispin), &
                         1.0_dp, 2.0_dp*nlmo_env%penalty_strength(ispin))
 
          ! take into account the factor from the normalization constraint
@@ -948,7 +953,7 @@ CONTAINS
                              filter_eps=nlmo_env%eps_filter)
          ! 4. (sigma0*a_norm) .[X]_ii
          CALL dbcsr_multiply("N", "N", -1.0_dp, &
-                             m_temp_oo_2, &
+                             nlmo_env%m_sigma0_thetanorm(ispin), &
                              m_temp_oo_1, &
                              1.0_dp, nlmo_env%grad(ispin), &
                              filter_eps=nlmo_env%eps_filter)
@@ -994,21 +999,26 @@ CONTAINS
 
       ELSE ! non-BFGS
 
-         IF (nlmo_env%hessian_type .NE. xalmo_prec_zero) THEN
+         ! A variety of hessians:
+         ! ** Identity hessian (already implemented)
+         ! ** Zero hessian (already implemented)
+         ! ** Penalty only exact hessian
 
-            CPWARN("THIS HESSIAN IS AN IDENTITY MATRIX")
-            ! RZK-critical: hessian code NYI
-            ! Assume identity matrix for now
+         SELECT CASE (nlmo_env%hessian_type)
+         CASE (xalmo_prec_full)
+
+            ! Do nothing: the hessian is too big to be computed explicitly
+            ! All necessary computations are performed in the apply subroutine
+
+         CASE (xalmo_prec_identity)
+
+            ! Hessian is switched off by user: do nothing
             DO ispin = 1, nspins
                CALL dbcsr_set(nlmo_env%m_model_hessian(ispin), 0.0_dp)
                CALL dbcsr_add_on_diag(nlmo_env%m_model_hessian(ispin), 1.0_dp)
             ENDDO
 
-         ELSE ! no curvature info requested
-
-            ! Hessian is switched off by user: do nothing
-
-         ENDIF
+         END SELECT
 
       ENDIF ! hessian type
 
@@ -1139,42 +1149,154 @@ CONTAINS
 
       ELSE ! non-BFGS
 
-         IF (nlmo_env%hessian_type .NE. xalmo_prec_zero) THEN
+         SELECT CASE (nlmo_env%hessian_type)
+         CASE (xalmo_prec_full)
 
-            CPWARN("THIS INVERTED HESSIAN IS AN IDENTITY MATRIX")
-            ! RZK-critical: hessian inversion NYI
-            ! Assume identity matrix for now
+            ! Do nothing: the hessian is too big to be inverted explicitly
+
+         CASE (xalmo_prec_identity)
+
+            ! Hessian inversion is switched off by user: do nothing
+            ! Assume identity matrix
             DO ispin = 1, nspins
                CALL dbcsr_set(nlmo_env%m_model_hessian_inv(ispin), 0.0_dp)
                CALL dbcsr_add_on_diag(nlmo_env%m_model_hessian_inv(ispin), 1.0_dp)
             ENDDO
-            ! invert using cholesky decomposition
-            !DO ispin = 1, nspins
 
-            !   CALL dbcsr_copy(nlmo_env%m_model_hessian_inv(ispin), &
-            !                   nlmo_env%m_model_hessian(ispin))
-            !   CALL cp_dbcsr_cholesky_decompose(nlmo_env%m_model_hessian_inv(ispin), &
-            !                                    para_env=almo_scf_env%para_env, &
-            !                                    blacs_env=almo_scf_env%blacs_env)
-            !   CALL cp_dbcsr_cholesky_invert(nlmo_env%m_model_hessian_inv(ispin), &
-            !                                 para_env=almo_scf_env%para_env, &
-            !                                 blacs_env=almo_scf_env%blacs_env, &
-            !                                 upper_to_full=.TRUE.)
-            !   CALL dbcsr_filter(nlmo_env%m_model_hessian_inv(ispin), &
-            !                     eps=almo_scf_env%eps_filter)
-
-            !ENDDO
-
-
-         ELSE ! no curvature info requested
-
-            ! Hessian inversion is switched off by user: do nothing
-
-         ENDIF
+         END SELECT
 
       ENDIF ! hessian type
 
    END SUBROUTINE nlmo_env_invert_hessian
+
+! **************************************************************************************************
+!> \brief
+!> \param nlmo_env ...
+!> \par History
+!>       2020.02 created [Rustam Z Khaliullin]
+!> \author Rustam Z Khaliullin
+! **************************************************************************************************
+   SUBROUTINE nlmo_env_hessian_apply(nlmo_env, m_in, m_out)
+
+      TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_out
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), OPTIONAL &
+                                                         :: m_in
+
+      INTEGER                                            :: ispin, nspins, dim0
+      LOGICAL                                            :: d_bfgs, l_bfgs
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: tg_diagonal
+      TYPE(dbcsr_type)                                   :: tm_oo_1, tm_oo_2, tm_oo_3
+
+      nspins = SIZE(nlmo_env%m_model_hessian)
+
+      d_bfgs=nlmo_env%d_bfgs
+      l_bfgs=nlmo_env%l_bfgs
+
+      IF (d_bfgs .OR. l_bfgs) THEN
+
+         ! RZK-hessian: unclear what needs to be done here
+         ! Do we use BFGS for the PCG/TRUSTR. Within TRUSTR: is it a subproblem solver?
+         CPABORT("This Hessian is NYI for BFGS (sub)problem solver")
+
+      ELSE ! non-BFGS
+
+         SELECT CASE (nlmo_env%hessian_type)
+         CASE (xalmo_prec_full)
+
+            DO ispin = 1, nspins
+
+               CALL dbcsr_create(tm_oo_1, &
+                                 template=nlmo_env%m_theta_normalized(ispin), &
+                                 matrix_type=dbcsr_type_no_symmetry)
+               CALL dbcsr_create(tm_oo_2, &
+                                 template=nlmo_env%m_theta_normalized(ispin), &
+                                 matrix_type=dbcsr_type_no_symmetry)
+               CALL dbcsr_create(tm_oo_3, &
+                                 template=nlmo_env%m_theta_normalized(ispin), &
+                                 matrix_type=dbcsr_type_no_symmetry)
+
+               CALL dbcsr_get_info(nlmo_env%m_theta_normalized(ispin), nfullrows_total=dim0)
+               ALLOCATE (tg_diagonal(dim0))
+
+               ! Compute (S).tr(m_in.N).(S), where S=(sigma0.A.siginv)
+               CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                   m_in(ispin), &
+                                   nlmo_env%m_sig_sqrti_ii(ispin), &
+                                   0.0_dp, tm_oo_1, &
+                                   filter_eps=nlmo_env%eps_filter)
+               CALL dbcsr_multiply("T", "N", 1.0_dp, &
+                                   tm_oo_1, &
+                                   nlmo_env%m_sigma0_thetanorm_siginv(ispin), &
+                                   0.0_dp, tm_oo_2, &
+                                   filter_eps=nlmo_env%eps_filter)
+               CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                   nlmo_env%m_sigma0_thetanorm_siginv(ispin), &
+                                   tm_oo_2, &
+                                   0.0_dp, tm_oo_1, &
+                                   filter_eps=nlmo_env%eps_filter)
+
+               ! Accumulate: + sigma0.m_in.N
+               CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                   nlmo_env%m_sigma0(ispin), &
+                                   m_in(ispin), &
+                                   0.0_dp, tm_oo_2, &
+                                   filter_eps=nlmo_env%eps_filter)
+               CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                   tm_oo_2, &
+                                   nlmo_env%m_sig_sqrti_ii(ispin), &
+                                   1.0_dp, tm_oo_1, &
+                                   filter_eps=nlmo_env%eps_filter)
+
+               ! Accumulate: (-1)*T.(tr(m_in).T)_diag.N, where T=sigma0.A
+               CALL dbcsr_multiply("T", "N", 1.0_dp, &
+                                   m_in(ispin), &
+                                   nlmo_env%m_sigma0_thetanorm(ispin), &
+                                   0.0_dp, tm_oo_2, &
+                                   filter_eps=nlmo_env%eps_filter)
+               CALL dbcsr_get_diag(tm_oo_2, tg_diagonal)
+               CALL dbcsr_set(tm_oo_2, 0.0_dp)
+               CALL dbcsr_set_diag(tm_oo_2, tg_diagonal)
+
+               CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                   nlmo_env%m_sigma0_thetanorm(ispin), &
+                                   tm_oo_2, &
+                                   0.0_dp, tm_oo_3, &
+                                   filter_eps=nlmo_env%eps_filter)
+               CALL dbcsr_multiply("N", "N", -1.0_dp, &
+                                   tm_oo_3, &
+                                   nlmo_env%m_sig_sqrti_ii(ispin), &
+                                   1.0_dp, tm_oo_1, &
+                                   filter_eps=nlmo_env%eps_filter)
+
+               ! RZK-critical: sign is not yet determined!!!!
+WRITE(*,*) "nlmo_env%penalty_strength: ", nlmo_env%penalty_strength(ispin)
+               CALL dbcsr_multiply("N", "N", -2.0_dp*nlmo_env%penalty_strength(ispin), &
+                                   tm_oo_1, &
+                                   nlmo_env%m_sig_sqrti_ii(ispin), &
+                                   0.0_dp, m_out(ispin), &
+                                   filter_eps=nlmo_env%eps_filter)
+
+               DEALLOCATE (tg_diagonal)
+
+               CALL dbcsr_release(tm_oo_3)
+               CALL dbcsr_release(tm_oo_2)
+               CALL dbcsr_release(tm_oo_1)
+
+            ENDDO
+
+         CASE (xalmo_prec_identity)
+
+            ! Hessian is set to identity by user
+            DO ispin = 1, nspins
+               CALL dbcsr_copy(m_out(ispin), m_in(ispin))
+            ENDDO ! ispin
+
+         END SELECT
+
+      ENDIF ! hessian type
+
+   END SUBROUTINE nlmo_env_hessian_apply
 
 ! **************************************************************************************************
 !> \brief
@@ -1231,8 +1353,16 @@ CONTAINS
 
       ELSE ! non-BFGS
 
-         IF (nlmo_env%hessian_type .NE. xalmo_prec_zero) THEN
+         SELECT CASE (nlmo_env%hessian_type)
+         CASE (xalmo_prec_full)
 
+            ! This is required for the DOGLEG method that compute -H^(-1).grad
+            ! This code will rely a lot on apply_hessian
+            CPABORT("This Hessian is NYI for DOGLEG subproblem solver")
+
+         CASE (xalmo_prec_identity)
+
+            ! Hessian is set to identity by user
             DO ispin = 1, nspins
 
                CALL dbcsr_multiply("N", "N", 1.0_dp, &
@@ -1240,30 +1370,18 @@ CONTAINS
                                    m_in(ispin), &
                                    0.0_dp, m_out(ispin), &
                                    filter_eps=nlmo_env%eps_filter)
-               !CALL dbcsr_hadamard_product(nlmo_env%m_model_hessian_inv(ispin), &
-               !                            m_in(ispin), m_out(ispin))
                CALL dbcsr_scale(m_out(ispin), -1.0_dp)
 
             ENDDO ! ispin
 
-         ELSE ! no curvature info requested
-
-            ! Hessian is set to identity by user
-            DO ispin = 1, nspins
-
-               CALL dbcsr_copy(m_out(ispin), m_in(ispin))
-               CALL dbcsr_scale(m_out(ispin), -1.0_dp)
-
-            ENDDO ! ispin
-
-         ENDIF
+         END SELECT
 
       ENDIF ! hessian type
 
    END SUBROUTINE nlmo_env_minus_hessian_inv_apply
 
 ! **************************************************************************************************
-!> \brief
+!> \brief This subroutine is obsolete. Do not call
 !> \param nlmo_env ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
@@ -1297,7 +1415,7 @@ CONTAINS
       l_bfgs=nlmo_env%l_bfgs
 
       ! if available use second derivative info - bfgs, hessian, preconditioner
-      IF (nlmo_env%hessian_type .EQ. xalmo_prec_zero) THEN ! no second derivatives
+      IF (nlmo_env%hessian_type .EQ. xalmo_prec_identity) THEN ! no second derivatives
 
          ! no preconditioner
          DO ispin = 1, nspins
@@ -1455,6 +1573,8 @@ CONTAINS
       ENDIF
 
       DO ispin = 1, nspins
+         CALL dbcsr_release(nlmo_env%m_sigma0_thetanorm(ispin))
+         CALL dbcsr_release(nlmo_env%m_sigma0_thetanorm_siginv(ispin))
          CALL dbcsr_release(nlmo_env%m_theta(ispin))
          CALL dbcsr_release(nlmo_env%m_mo_initial(ispin))
          CALL dbcsr_release(nlmo_env%m_mo(ispin))
@@ -1469,6 +1589,8 @@ CONTAINS
          CALL dbcsr_release(nlmo_env%m_siginv(ispin))
       ENDDO ! ispin
 
+      DEALLOCATE (nlmo_env%m_sigma0_thetanorm)
+      DEALLOCATE (nlmo_env%m_sigma0_thetanorm_siginv)
       DEALLOCATE (nlmo_env%m_theta)
       DEALLOCATE (nlmo_env%m_mo_initial)
       DEALLOCATE (nlmo_env%m_mo)
@@ -1483,6 +1605,70 @@ CONTAINS
       DEALLOCATE (nlmo_env%m_siginv)
 
    END SUBROUTINE nlmo_env_deallocate_all
+
+! **************************************************************************************************
+!> \brief Loss reduction for a given step is estimated using
+!>        gradient and hessian
+!> \param reduction_out ...
+!> \param grad_in ...
+!> \param step_in ...
+!> \param hess_in ...
+!> \param hess_submatrix_in ...
+!> \param quench_t_in ...
+!> \param special_case ...
+!> \param eps_filter ...
+!> \param domain_map ...
+!> \param cpu_of_domain ...
+!> \par History
+!>       2019.12 created [Rustam Z Khaliullin]
+!> \author Rustam Z Khaliullin
+! **************************************************************************************************
+   SUBROUTINE nlmo_env_predicted_reduction(nlmo_env, step_in, reduction_out)
+
+      TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
+      REAL(KIND=dp), INTENT(INOUT)                       :: reduction_out
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: step_in
+
+      INTEGER                                            :: ispin, nspins
+      REAL(KIND=dp)                                      :: my_reduction, temp_real
+      TYPE(dbcsr_type), DIMENSION(:), ALLOCATABLE        :: m_temp_no
+
+      reduction_out = 0.0_dp
+
+      nspins = SIZE(step_in)
+      ALLOCATE(m_temp_no(nspins))
+
+      my_reduction = 0.0_dp
+      ! Get y=Trace(Tr(step).grad)
+      DO ispin = 1, nspins
+
+         CALL dbcsr_dot(step_in(ispin), nlmo_env%grad(ispin), temp_real)
+         my_reduction = my_reduction + temp_real
+
+         CALL dbcsr_create(m_temp_no(ispin), template=step_in(ispin))
+
+      ENDDO ! ispin
+
+      ! Add y=0.5*Trace(Tr(step).Hess.step)
+      CALL nlmo_env_hessian_apply(nlmo_env=nlmo_env, m_in=step_in, m_out=m_temp_no)
+
+      DO ispin = 1, nspins
+
+         CALL dbcsr_dot(step_in(ispin), m_temp_no(ispin), temp_real)
+         my_reduction = my_reduction + 0.5_dp*temp_real
+
+         CALL dbcsr_release(m_temp_no(ispin))
+
+      ENDDO ! ispin
+
+      DEALLOCATE(m_temp_no)
+
+      ! RZK: do we need to multiply by the spin factor?
+      ! Answer: NO, if the gradient and hessian are computed with the correct spin factors
+
+      reduction_out = my_reduction
+
+   END SUBROUTINE nlmo_env_predicted_reduction
 
 END MODULE nlmo_methods
 

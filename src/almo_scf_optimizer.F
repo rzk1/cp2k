@@ -76,7 +76,7 @@ MODULE almo_scf_optimizer
         almo_scf_diag, almo_scf_dm_sign, cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, &
         cg_hager_zhang, cg_hestenes_stiefel, cg_liu_storey, cg_polak_ribiere, cg_zero, &
         trustr_cauchy, trustr_dogleg, virt_full, xalmo_case_block_diag, xalmo_case_fully_deloc, &
-        xalmo_case_normal, xalmo_prec_domain, xalmo_prec_full, xalmo_prec_zero
+        xalmo_case_normal, xalmo_prec_domain, xalmo_prec_full, xalmo_prec_identity
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
    USE iterate_matrix,                  ONLY: determinant,&
@@ -1717,7 +1717,7 @@ CONTAINS
 
                      ENDIF ! special case
 
-                  CASE (xalmo_prec_zero)
+                  CASE (xalmo_prec_identity)
 
                      ! no preconditioner
                      DO ispin = 1, nspins
@@ -6182,7 +6182,7 @@ CONTAINS
       ENDIF
 
       ! set optimizer options
-      use_preconditioner = (optimizer%preconditioner .NE. xalmo_prec_zero)
+      use_preconditioner = (optimizer%preconditioner .NE. xalmo_prec_identity)
       outer_max_iter = optimizer%max_iter_outer_loop
       max_iter = optimizer%max_iter
       eps_error_target = optimizer%eps_error

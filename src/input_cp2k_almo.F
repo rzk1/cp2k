@@ -23,7 +23,7 @@ MODULE input_cp2k_almo
         optimizer_diis, optimizer_lin_eq_pcg, optimizer_pcg, optimizer_trustr, &
         spd_inversion_dense_cholesky, spd_inversion_ls_hotelling, spd_inversion_ls_taylor, &
         trustr_cauchy, trustr_dogleg, trustr_steihaug, xalmo_prec_domain, xalmo_prec_full, &
-        xalmo_prec_zero, xalmo_trial_r0_out, xalmo_trial_simplex, xalmo_prec_lbfgs
+        xalmo_prec_identity, xalmo_trial_r0_out, xalmo_trial_simplex, xalmo_prec_lbfgs
    USE input_keyword_types,             ONLY: keyword_create,&
                                               keyword_release,&
                                               keyword_type
@@ -738,7 +738,7 @@ CONTAINS
                                            " The main component of the linear scaling algorithm", &
                                            "Solve linear equations step=-H.grad on the entire space", &
                                            "Use limited-memory BFGS method"), &
-                             enum_i_vals=(/xalmo_prec_zero, xalmo_prec_domain, &
+                             enum_i_vals=(/xalmo_prec_identity, xalmo_prec_domain, &
                                            xalmo_prec_domain, xalmo_prec_full, xalmo_prec_lbfgs/))
          CALL section_add_keyword(section, keyword)
          CALL keyword_release(keyword)

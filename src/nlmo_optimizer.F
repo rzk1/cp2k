@@ -18,7 +18,6 @@ MODULE nlmo_optimizer
                                               fixed_r_report, &
                                               step_size_to_border, &
                                               contravariant_matrix_norm, &
-                                              predicted_reduction, &
                                               compute_cg_beta
    USE almo_scf_types,                  ONLY: almo_scf_env_type,&
                                               optimizer_options_type
@@ -52,7 +51,7 @@ MODULE nlmo_optimizer
         almo_scf_diag, almo_scf_dm_sign, cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, &
         cg_hager_zhang, cg_hestenes_stiefel, cg_liu_storey, cg_polak_ribiere, cg_zero, &
         trustr_cauchy, trustr_dogleg, virt_full, xalmo_case_block_diag, xalmo_case_fully_deloc, &
-        xalmo_case_normal, xalmo_prec_domain, xalmo_prec_full, xalmo_prec_zero, &
+        xalmo_case_normal, xalmo_prec_domain, xalmo_prec_full, xalmo_prec_identity, &
         almo_scf_pcg, almo_scf_skip, almo_scf_trustr, xalmo_prec_lbfgs, xalmo_prec_dbfgs
    USE iterate_matrix,                  ONLY: determinant,&
                                               invert_Hotelling,&
@@ -66,6 +65,7 @@ MODULE nlmo_optimizer
         nlmo_env_init, nlmo_env_allocate_all, nlmo_env_compute_BK_ij, nlmo_env_compute_sigma0_ij, &
         nlmo_env_deallocate_all, nlmo_env_loss_curvature_grad_to_step, nlmo_env_loss_function, &
         nlmo_env_loss_gradient, nlmo_env_mainvar_initial_guess, nlmo_env_mainvar_to_aux, &
+        nlmo_env_predicted_reduction, nlmo_env_hessian_apply, &
         nlmo_env_set_flags, nlmo_env_invert_hessian, nlmo_env_loss_hessian, nlmo_env_release
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
@@ -167,7 +167,7 @@ CONTAINS
       ! loop over the strength of the orthogonalization penalty
       prev_determinant = 10.0_dp
       penalty_alpha = almo_scf_env%opt_nlmo_penalty%penalty_strength
-      DO WHILE (almo_scf_env%overlap_determinant .GT. almo_scf_env%opt_nlmo_penalty%final_determinant)
+      DO ! WHILE (almo_scf_env%overlap_determinant .GT. almo_scf_env%opt_nlmo_penalty%final_determinant)
 
          IF (unit_nr > 0) THEN
             WRITE (unit_nr, '()')
@@ -216,17 +216,18 @@ CONTAINS
 
          ! almo_scf_env stores the largest of the determinants of the two spins
          almo_scf_env%overlap_determinant = MAXVAL(nlmo_env%overlap_determinant)
-
          det_diff = prev_determinant - almo_scf_env%overlap_determinant
+
+         IF (det_diff < almo_scf_env%opt_nlmo_penalty%determinant_tolerance .OR. &
+             almo_scf_env%overlap_determinant .LE. almo_scf_env%opt_nlmo_penalty%final_determinant) THEN
+            EXIT
+         ENDIF
+
+         prev_determinant = almo_scf_env%overlap_determinant
          nlmo_env%penalty_strength(:) = nlmo_env%penalty_strength(:)/ &
                                         ABS(almo_scf_env%opt_nlmo_penalty%penalty_strength_dec_factor)
          penalty_alpha = penalty_alpha/ &
                          ABS(almo_scf_env%opt_nlmo_penalty%penalty_strength_dec_factor)
-
-         IF (det_diff < almo_scf_env%opt_nlmo_penalty%determinant_tolerance) THEN
-            EXIT
-         ENDIF
-         prev_determinant = almo_scf_env%overlap_determinant
 
       ENDDO
 
@@ -935,16 +936,11 @@ CONTAINS
          fixed_r_loop: DO iteration = 1, optimizer%max_iter
 
             ! Step 2. Get curvature. If negative, step to the border
+            ! Compute B.d
+            CALL nlmo_env_hessian_apply(nlmo_env=nlmo_env, m_in=m_model_d, m_out=m_model_Bd)
+            !RZK-critical: y_scalar should be separate for each spin?
             y_scalar = 0.0_dp
             DO ispin = 1, nspins
-
-               ! Get B.d
-               ! RZK-critical: implement an nlmo_env method
-               CALL dbcsr_multiply("N", "N", 1.0_dp, &
-                                   nlmo_env%m_model_hessian(ispin), &
-                                   m_model_d(ispin), &
-                                   0.0_dp, m_model_Bd(ispin), &
-                                   filter_eps=nlmo_env%eps_filter)
 
                ! Get y=d^T.B.d
                CALL dbcsr_dot(m_model_d(ispin), m_model_Bd(ispin), real_temp)
@@ -972,12 +968,9 @@ CONTAINS
                border_reached = .TRUE.
                inner_loop_success = .TRUE.
 
-               CALL predicted_reduction( &
-                  reduction_out=expected_reduction, &
-                  grad_in=nlmo_env%grad, &
-                  step_in=step, &
-                  hess_in=nlmo_env%m_model_hessian, &
-                  eps_filter=nlmo_env%eps_filter)
+               CALL nlmo_env_predicted_reduction(nlmo_env=nlmo_env, &
+                                                 reduction_out=expected_reduction, &
+                                                 step_in=step)
 
                t2 = m_walltime()
                CALL fixed_r_report(unit_nr, &
@@ -1049,12 +1042,9 @@ CONTAINS
                border_reached = .TRUE.
                inner_loop_success = .TRUE.
 
-               CALL predicted_reduction( &
-                  reduction_out=expected_reduction, &
-                  grad_in=nlmo_env%grad, &
-                  step_in=step, &
-                  hess_in=nlmo_env%m_model_hessian, &
-                  eps_filter=nlmo_env%eps_filter)
+               CALL nlmo_env_predicted_reduction(nlmo_env=nlmo_env, &
+                                                 reduction_out=expected_reduction, &
+                                                 step_in=step)
 
                t2 = m_walltime()
                CALL fixed_r_report(unit_nr, &
@@ -1076,12 +1066,9 @@ CONTAINS
                border_reached = .FALSE.
                inner_loop_success = .TRUE.
 
-               CALL predicted_reduction( &
-                  reduction_out=expected_reduction, &
-                  grad_in=nlmo_env%grad, &
-                  step_in=step, &
-                  hess_in=nlmo_env%m_model_hessian, &
-                  eps_filter=nlmo_env%eps_filter)
+               CALL nlmo_env_predicted_reduction(nlmo_env=nlmo_env, &
+                                                 reduction_out=expected_reduction, &
+                                                 step_in=step)
 
                t2 = m_walltime()
                CALL fixed_r_report(unit_nr, &
@@ -1180,12 +1167,9 @@ CONTAINS
                   IF (unit_nr > 0) WRITE (unit_nr, *) "...Current radius: ", radius_current
                ENDIF
 
-               CALL predicted_reduction( &
-                  reduction_out=expected_reduction, &
-                  grad_in=nlmo_env%grad, &
-                  step_in=step, &
-                  hess_in=nlmo_env%m_model_hessian, &
-                  eps_filter=nlmo_env%eps_filter)
+               CALL nlmo_env_predicted_reduction(nlmo_env=nlmo_env, &
+                                                 reduction_out=expected_reduction, &
+                                                 step_in=step)
 
                inner_loop_success = .TRUE.
 
@@ -1227,12 +1211,9 @@ CONTAINS
                border_reached = .FALSE.
                inner_loop_success = .TRUE.
 
-               CALL predicted_reduction( &
-                  reduction_out=expected_reduction, &
-                  grad_in=nlmo_env%grad, &
-                  step_in=step, &
-                  hess_in=nlmo_env%m_model_hessian, &
-                  eps_filter=nlmo_env%eps_filter)
+               CALL nlmo_env_predicted_reduction(nlmo_env=nlmo_env, &
+                                                 reduction_out=expected_reduction, &
+                                                 step_in=step)
 
                t2 = m_walltime()
                CALL fixed_r_report(unit_nr, &
