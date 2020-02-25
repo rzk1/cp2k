@@ -21,7 +21,7 @@ MODULE almo_scf_types
         cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, cg_hager_zhang, cg_hestenes_stiefel, &
         cg_liu_storey, cg_polak_ribiere, cg_zero, optimizer_diis, optimizer_pcg, optimizer_trustr, &
         trustr_cauchy, trustr_dogleg, trustr_steihaug, xalmo_prec_domain, xalmo_prec_full, &
-        xalmo_prec_zero
+        xalmo_prec_identity
    USE kinds,                           ONLY: dp
 #include "./base/base_uses.f90"
 
@@ -471,7 +471,7 @@ CONTAINS
                optimizer%max_iter_outer_loop
 
             SELECT CASE (optimizer%preconditioner)
-            CASE (xalmo_prec_zero)
+            CASE (xalmo_prec_identity)
                prec_string = "NONE"
             CASE (xalmo_prec_domain)
                prec_string = "0.5 KS + 0.5 S, DOMAINS"

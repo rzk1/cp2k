@@ -50,9 +50,9 @@
         MAX_ITER_OUTER_LOOP         1000
         EPS_ERROR                   0.001
         CONJUGATOR                  ZERO
-        PRECONDITIONER              DEFAULT
+        PRECONDITIONER              FULL
         ETA                         0.25
-        INITIAL_TRUST_RADIUS        0.001
+        INITIAL_TRUST_RADIUS        0.01
         MAX_TRUST_RADIUS            2.0
       &END NLMO_OPTIMIZER_TRUSTR
 

@@ -944,7 +944,7 @@ MODULE input_constants
                                    optimizer_pcg = 2, &
                                    optimizer_trustr = 4, &
                                    optimizer_lin_eq_pcg = 3
-   INTEGER, PARAMETER, PUBLIC   :: xalmo_prec_zero = 0, &
+   INTEGER, PARAMETER, PUBLIC   :: xalmo_prec_identity = 0, &
                                    xalmo_prec_domain = 1, &
                                    xalmo_prec_full = 2, &
                                    xalmo_prec_dbfgs = 3, &
