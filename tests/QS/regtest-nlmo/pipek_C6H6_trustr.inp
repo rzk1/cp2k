@@ -28,7 +28,7 @@
       RETURN_ORTHOGONALIZED_MOS  FALSE
 
       CONSTRUCT_NLMOS            TRUST_REGION
-      VIRTUAL_NLMOS              FALSE !TRUE !FALSE
+      VIRTUAL_NLMOS              TRUE !FALSE
       NLMO_OPERATOR              PIPEK
       !NLMO_COMPACT_FILTER_START  1.0E-3
 
@@ -57,7 +57,8 @@
         MAX_ITER                    100
         MAX_ITER_OUTER_LOOP         1000
         EPS_ERROR                   0.00001
-        CONJUGATOR                  ZERO
+        MODEL_GRAD_NORM_RATIO       0.1
+        CONJUGATOR                  FLETCHER
         PRECONDITIONER              FULL
         ETA                         0.25
         INITIAL_TRUST_RADIUS        0.01
