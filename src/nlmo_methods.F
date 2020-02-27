@@ -1269,8 +1269,6 @@ CONTAINS
                                    1.0_dp, tm_oo_1, &
                                    filter_eps=nlmo_env%eps_filter)
 
-               ! RZK-critical: sign is not yet determined!!!!
-WRITE(*,*) "nlmo_env%penalty_strength: ", nlmo_env%penalty_strength(ispin)
                CALL dbcsr_multiply("N", "N", -2.0_dp*nlmo_env%penalty_strength(ispin), &
                                    tm_oo_1, &
                                    nlmo_env%m_sig_sqrti_ii(ispin), &
