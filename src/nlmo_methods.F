@@ -1183,10 +1183,12 @@ CONTAINS
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), OPTIONAL &
                                                          :: m_in
 
-      INTEGER                                            :: ispin, nspins, dim0
+      INTEGER                                            :: ispin, nspins, dim0, idim0, reim
       LOGICAL                                            :: d_bfgs, l_bfgs
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: tg_diagonal
-      TYPE(dbcsr_type)                                   :: tm_oo_1, tm_oo_2, tm_oo_3
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: tg_diagonal, z2
+      TYPE(dbcsr_type)                                   :: tm_oo_1, tm_oo_2, tm_oo_3, &
+                                                            tm_oo_4, tm_oo_5, tm_oo_6, &
+                                                            tm_oo_7, tm_oo_8
 
       nspins = SIZE(nlmo_env%m_model_hessian)
 
@@ -1213,6 +1215,21 @@ CONTAINS
                                  template=nlmo_env%m_theta_normalized(ispin), &
                                  matrix_type=dbcsr_type_no_symmetry)
                CALL dbcsr_create(tm_oo_3, &
+                                 template=nlmo_env%m_theta_normalized(ispin), &
+                                 matrix_type=dbcsr_type_no_symmetry)
+               CALL dbcsr_create(tm_oo_4, &
+                                 template=nlmo_env%m_theta_normalized(ispin), &
+                                 matrix_type=dbcsr_type_no_symmetry)
+               CALL dbcsr_create(tm_oo_5, &
+                                 template=nlmo_env%m_theta_normalized(ispin), &
+                                 matrix_type=dbcsr_type_no_symmetry)
+               CALL dbcsr_create(tm_oo_6, &
+                                 template=nlmo_env%m_theta_normalized(ispin), &
+                                 matrix_type=dbcsr_type_no_symmetry)
+               CALL dbcsr_create(tm_oo_7, &
+                                 template=nlmo_env%m_theta_normalized(ispin), &
+                                 matrix_type=dbcsr_type_no_symmetry)
+               CALL dbcsr_create(tm_oo_8, &
                                  template=nlmo_env%m_theta_normalized(ispin), &
                                  matrix_type=dbcsr_type_no_symmetry)
 
@@ -1275,8 +1292,179 @@ CONTAINS
                                    0.0_dp, m_out(ispin), &
                                    filter_eps=nlmo_env%eps_filter)
 
+               ALLOCATE (z2(dim0))
+               CALL dbcsr_set(tm_oo_1, 0.0_dp) ! accumulate the gradient wrt a_norm here
+
+               ! Compute diag(m_in_T * T) and save in tm_oo_7, where T=sigma0.A
+               CALL dbcsr_multiply("T", "N", 1.0_dp, &
+                                   m_in(ispin), &
+                                   nlmo_env%m_sigma0_thetanorm(ispin), &
+                                   0.0_dp, tm_oo_7, &
+                                   filter_eps=nlmo_env%eps_filter)
+               tg_diagonal(:) = 0.0_dp
+               CALL dbcsr_get_diag(tm_oo_7, tg_diagonal)
+               CALL dbcsr_set(tm_oo_7, 0.0_dp)
+               CALL dbcsr_set_diag(tm_oo_7, tg_diagonal)
+
+               ! do d_Omega/d_a_normalized first
+               DO idim0 = 1, SIZE(nlmo_env%m_B0, 2) ! this loop is over miller ind
+
+                  z2(:) = 0.0_dp
+                  CALL dbcsr_set(tm_oo_2, 0.0_dp) ! accumulate index gradient here
+                  DO reim = 1, SIZE(nlmo_env%m_B0, 1) ! this loop is over Re/Im
+
+                     ! Compute B * A and save in tm_oo_3
+                     CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                         nlmo_env%m_B0(reim, idim0, ispin), &
+                                         nlmo_env%m_theta_normalized(ispin), &
+                                         0.0_dp, tm_oo_3, &
+                                         filter_eps=nlmo_env%eps_filter)
+
+                     ! Compute z_I and save in tm_oo_4
+                     ! result contain Re/Im part of Z for the current Miller index
+                     ! warning - save time by computing only the diagonal elements
+                     CALL dbcsr_multiply("T", "N", 1.0_dp, &
+                                         nlmo_env%m_theta_normalized(ispin), &
+                                         tm_oo_3, &
+                                         0.0_dp, tm_oo_4, &
+                                         filter_eps=nlmo_env%eps_filter)
+
+                     tg_diagonal(:) = 0.0_dp
+                     CALL dbcsr_get_diag(tm_oo_4, tg_diagonal)
+                     CALL dbcsr_set(tm_oo_4, 0.0_dp)
+                     CALL dbcsr_set_diag(tm_oo_4, tg_diagonal)
+                     !CALL mp_sum(tg_diagonal, para_group)
+                     z2(:) = z2(:) + tg_diagonal(:)*tg_diagonal(:)
+
+                     ! Compute z_I^2 and save in tm_oo_5
+                     CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                         tm_oo_4, &
+                                         tm_oo_4, &
+                                         0.0_dp, tm_oo_5, &
+                                         filter_eps=nlmo_env%eps_filter)
+
+                     ! Compute diag(m_in_T * B * A) and save in tm_oo_6
+                     CALL dbcsr_multiply("T", "N", 1.0_dp, &
+                                         m_in(ispin), &
+                                         tm_oo_3, &
+                                         0.0_dp, tm_oo_6, &
+                                         filter_eps=nlmo_env%eps_filter)
+                     tg_diagonal(:) = 0.0_dp
+                     CALL dbcsr_get_diag(tm_oo_6, tg_diagonal)
+                     CALL dbcsr_set(tm_oo_6, 0.0_dp)
+                     CALL dbcsr_set_diag(tm_oo_6, tg_diagonal)
+
+                     ! Accumulate: B * m_in * z_I
+                     CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                         nlmo_env%m_B0(reim, idim0, ispin), &
+                                         m_in(ispin), &
+                                         0.0_dp, tm_oo_8, &
+                                         filter_eps=nlmo_env%eps_filter)
+                     CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                         tm_oo_8, &
+                                         tm_oo_4, &
+                                         1.0_dp, tm_oo_2, &
+                                         filter_eps=nlmo_env%eps_filter)
+
+                     ! Accumulate: 2 * BA * diag(m_in_T * BA)
+                     CALL dbcsr_multiply("N", "N", 2.0_dp, &
+                                         tm_oo_3, &
+                                         tm_oo_6, &
+                                         1.0_dp, tm_oo_2, &
+                                         filter_eps=nlmo_env%eps_filter)
+
+                     ! Accumulate: -4 T * z_I * diag(m_in_T * BA)
+                     CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                         nlmo_env%m_sigma0_thetanorm(ispin), &
+                                         tm_oo_4, &
+                                         0.0_dp, tm_oo_8, &
+                                         filter_eps=nlmo_env%eps_filter)
+                     CALL dbcsr_multiply("N", "N", -4.0_dp, &
+                                         tm_oo_8, &
+                                         tm_oo_6, &
+                                         1.0_dp, tm_oo_2, &
+                                         filter_eps=nlmo_env%eps_filter)
+
+                     ! Accumulate: -4 BA * z_I * diag(m_in_T * T)
+                     CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                         tm_oo_3, &
+                                         tm_oo_4, &
+                                         0.0_dp, tm_oo_8, &
+                                         filter_eps=nlmo_env%eps_filter)
+                     CALL dbcsr_multiply("N", "N", -4.0_dp, &
+                                         tm_oo_8, &
+                                         tm_oo_7, &
+                                         1.0_dp, tm_oo_2, &
+                                         filter_eps=nlmo_env%eps_filter)
+
+                     ! Accumulate: 6 * T * z_I^2 * diag(m_in_T * T)
+                     CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                         nlmo_env%m_sigma0_thetanorm(ispin), &
+                                         tm_oo_5, &
+                                         0.0_dp, tm_oo_8, &
+                                         filter_eps=nlmo_env%eps_filter)
+                     CALL dbcsr_multiply("N", "N", 6.0_dp, &
+                                         tm_oo_8, &
+                                         tm_oo_7, &
+                                         1.0_dp, tm_oo_2, &
+                                         filter_eps=nlmo_env%eps_filter)
+
+                     ! Accumulate: -1.0 * (sigma_0 * m_in) * z_I^2
+                     CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                         nlmo_env%m_sigma0(ispin), &
+                                         m_in(ispin), &
+                                         0.0_dp, tm_oo_8, &
+                                         filter_eps=nlmo_env%eps_filter)
+                     CALL dbcsr_multiply("N", "N", -1.0_dp, &
+                                         tm_oo_8, &
+                                         tm_oo_5, &
+                                         1.0_dp, tm_oo_2, &
+                                         filter_eps=nlmo_env%eps_filter)
+                  ENDDO
+
+                  ! TODO: because some elements are zeros on some MPI tasks the
+                  ! gradient evaluation will fail for CASE 1 and 3
+                  SELECT CASE (2) ! allows for selection of different spread functionals
+                  CASE (1) ! functional =  -W_I * log( |z_I|^2 )
+                     z2(:) = nlmo_env%weights(idim0)/(z2(:) * z2(:))
+                  CASE (2) ! functional =  W_I * ( 1 - |z_I|^2 )
+                     z2(:) = -nlmo_env%weights(idim0)
+                  CASE (3) ! functional =  W_I * ( 1 - |z_I| )
+                     z2(:) = nlmo_env%weights(idim0)/(4*SQRT(z2(:) * z2(:) * z2(:)))
+                  END SELECT
+                  CALL dbcsr_set(tm_oo_3, 0.0_dp)
+                  CALL dbcsr_set_diag(tm_oo_3, z2)
+                  ! TODO: print this matrix to make sure its block structure is fine
+                  ! and there are no unecessary elements
+
+                  CALL dbcsr_multiply("N", "N", 4.0_dp, &
+                                      tm_oo_2, &
+                                      tm_oo_3, &
+                                      1.0_dp, tm_oo_1, &
+                                      filter_eps=nlmo_env%eps_filter)
+
+               ENDDO ! end loop over idim0
+               CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                   nlmo_env%m_sig_sqrti_ii(ispin), &
+                                   nlmo_env%m_sig_sqrti_ii(ispin), &
+                                   0.0_dp, tm_oo_3, &
+                                   filter_eps=nlmo_env%eps_filter)
+               !CALL dbcsr_get_diag(tm_oo_3, tg_diagonal)
+               !CALL dbcsr_set(tm_oo_3, 0.0_dp)
+               !CALL dbcsr_set_diag(tm_oo_3, tg_diagonal)
+               CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                                   tm_oo_1, &
+                                   tm_oo_3, &
+                                   1.0_dp, m_out(ispin), &
+                                   filter_eps=nlmo_env%eps_filter)
+               DEALLOCATE (z2)
                DEALLOCATE (tg_diagonal)
 
+               CALL dbcsr_release(tm_oo_8)
+               CALL dbcsr_release(tm_oo_7)
+               CALL dbcsr_release(tm_oo_6)
+               CALL dbcsr_release(tm_oo_5)
+               CALL dbcsr_release(tm_oo_4)
                CALL dbcsr_release(tm_oo_3)
                CALL dbcsr_release(tm_oo_2)
                CALL dbcsr_release(tm_oo_1)
