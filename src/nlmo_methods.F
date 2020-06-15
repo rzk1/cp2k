@@ -12,55 +12,36 @@
 MODULE nlmo_methods
    USE almo_scf_lbfgs_types,            ONLY: lbfgs_create,&
                                               lbfgs_get_direction,&
-                                              lbfgs_history_type,&
                                               lbfgs_release,&
                                               lbfgs_seed
    USE almo_scf_methods,                ONLY: fill_matrix_with_ones
    USE almo_scf_qs,                     ONLY: matrix_qs_to_almo
    USE almo_scf_types,                  ONLY: optimizer_options_type
    USE cell_types,                      ONLY: cell_type
-   USE cp_blacs_env,                    ONLY: cp_blacs_env_type
-   USE cp_dbcsr_cholesky,               ONLY: cp_dbcsr_cholesky_decompose,&
-                                              cp_dbcsr_cholesky_invert,&
-                                              cp_dbcsr_cholesky_restore
-   USE cp_log_handling,                 ONLY: cp_get_default_logger,&
-                                              cp_logger_get_default_unit_nr,&
-                                              cp_logger_type,&
-                                              cp_to_string
-   USE cp_para_types,                   ONLY: cp_para_env_type
+   USE cp_log_handling,                 ONLY: cp_to_string
    USE dbcsr_api,                       ONLY: &
-        dbcsr_add, dbcsr_add_on_diag, dbcsr_copy, dbcsr_create, dbcsr_desymmetrize, &
-        dbcsr_distribution_get, dbcsr_distribution_type, dbcsr_dot, dbcsr_filter, dbcsr_finalize, &
-        dbcsr_frobenius_norm, dbcsr_func_dtanh, dbcsr_func_inverse, dbcsr_func_tanh, &
-        dbcsr_function_of_elements, dbcsr_get_block_p, dbcsr_get_diag, dbcsr_get_info, &
-        dbcsr_hadamard_product, dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, &
-        dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, &
-        dbcsr_nblkcols_total, dbcsr_nblkrows_total, dbcsr_norm, dbcsr_norm_maxabsnorm, &
-        dbcsr_p_type, dbcsr_print_block_sum, dbcsr_release, dbcsr_reserve_block2d, dbcsr_scale, &
-        dbcsr_set, dbcsr_set_diag, dbcsr_triu, dbcsr_type, dbcsr_type_no_symmetry, &
-        dbcsr_work_create, dbcsr_print
-   USE input_constants,                 ONLY: &
-        almo_scf_diag, almo_scf_dm_sign, cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, &
-        cg_hager_zhang, cg_hestenes_stiefel, cg_liu_storey, cg_polak_ribiere, cg_zero, &
-        trustr_cauchy, trustr_dogleg, virt_full, xalmo_case_block_diag, xalmo_case_fully_deloc, &
-        xalmo_case_normal, xalmo_prec_domain, xalmo_prec_full, xalmo_prec_identity, op_loc_berry,&
-        op_loc_pipek, xalmo_prec_dbfgs, xalmo_prec_lbfgs
+        dbcsr_add, dbcsr_add_on_diag, dbcsr_copy, dbcsr_create, dbcsr_dot, dbcsr_get_diag, &
+        dbcsr_get_info, dbcsr_hadamard_product, dbcsr_multiply, dbcsr_p_type, dbcsr_release, &
+        dbcsr_scale, dbcsr_set, dbcsr_set_diag, dbcsr_type, dbcsr_type_no_symmetry
+   USE input_constants,                 ONLY: cg_zero,&
+                                              op_loc_berry,&
+                                              op_loc_pipek,&
+                                              xalmo_prec_dbfgs,&
+                                              xalmo_prec_full,&
+                                              xalmo_prec_identity,&
+                                              xalmo_prec_lbfgs
    USE iterate_matrix,                  ONLY: determinant,&
-                                              invert_Hotelling,&
-                                              matrix_sqrt_Newton_Schulz
+                                              invert_Hotelling
    USE kinds,                           ONLY: dp
-   USE machine,                         ONLY: m_flush,&
-                                              m_walltime
    USE message_passing,                 ONLY: mp_sum
    USE nlmo_types,                      ONLY: nlmo_env_type
-   USE qs_energy_types,                 ONLY: qs_energy_type
-   USE qs_kind_types,                   ONLY: qs_kind_type
-   USE qs_environment_types,            ONLY: get_qs_env,&
-                                              qs_environment_type
-   USE qs_loc_utils,                    ONLY: compute_berry_operator
-   USE qs_localization_methods,         ONLY: initialize_weights
    USE particle_methods,                ONLY: get_particle_set
    USE particle_types,                  ONLY: particle_type
+   USE qs_environment_types,            ONLY: get_qs_env,&
+                                              qs_environment_type
+   USE qs_kind_types,                   ONLY: qs_kind_type
+   USE qs_loc_utils,                    ONLY: compute_berry_operator
+   USE qs_localization_methods,         ONLY: initialize_weights
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -96,6 +77,7 @@ CONTAINS
 !> \param loc_operator ...
 !> \param m_templateNN ...
 !> \param distr_type_AOs ...
+!> \param penalty_amplitude ...
 !> \param eps_filter ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
@@ -109,15 +91,13 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: loc_operator
       TYPE(dbcsr_type), INTENT(IN)                       :: m_templateNN
       INTEGER, INTENT(IN)                                :: distr_type_AOs
-      REAL(KIND=dp), INTENT(IN)                          :: penalty_amplitude
-      REAL(KIND=dp), INTENT(IN)                          :: eps_filter
+      REAL(KIND=dp), INTENT(IN)                          :: penalty_amplitude, eps_filter
 
       INTEGER                                            :: dim_op, idim0, reim
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: qs_matrix_s
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: op_sm_set_qs
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
-
 
       nlmo_env%penalty_strength(:) = 0.0_dp
       nlmo_env%overlap_determinant(:) = 0.0_dp
@@ -212,7 +192,6 @@ CONTAINS
 !>        The key stored components are: Occ x Occ BK matrix, K-weights
 !> \param nlmo_env ...
 !> \param qs_env ...
-!> \param m_mo0 ...
 !> \param m_metricNN ...
 !> \param m_templateOO ...
 !> \par History
@@ -395,8 +374,9 @@ CONTAINS
    END SUBROUTINE nlmo_env_release
 
 ! **************************************************************************************************
-!> \brief
+!> \brief ...
 !> \param nlmo_env ...
+!> \param optimizer ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -426,8 +406,10 @@ CONTAINS
    END SUBROUTINE nlmo_env_set_flags
 
 ! **************************************************************************************************
-!> \brief
+!> \brief ...
 !> \param nlmo_env ...
+!> \param templateOO ...
+!> \param templateNO ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -435,8 +417,7 @@ CONTAINS
    SUBROUTINE nlmo_env_allocate_all(nlmo_env, templateOO, templateNO)
 
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: templateOO, &
-                                                            templateNO
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: templateOO, templateNO
 
       INTEGER                                            :: ispin, nspins
 
@@ -513,8 +494,9 @@ CONTAINS
    END SUBROUTINE nlmo_env_allocate_all
 
 ! **************************************************************************************************
-!> \brief
+!> \brief ...
 !> \param nlmo_env ...
+!> \param m_mo_initial ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -538,8 +520,10 @@ CONTAINS
    END SUBROUTINE nlmo_env_mainvar_initial_guess
 
 ! **************************************************************************************************
-!> \brief
+!> \brief ...
 !> \param nlmo_env ...
+!> \param matrix_s ...
+!> \param invert ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -551,11 +535,11 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: invert
 
       INTEGER                                            :: ispin, nspins
-      TYPE(dbcsr_type)                                   :: m_NO
       LOGICAL                                            :: my_invert
+      TYPE(dbcsr_type)                                   :: m_NO
 
-      my_invert=.FALSE.
-      IF (PRESENT(invert)) my_invert=invert
+      my_invert = .FALSE.
+      IF (PRESENT(invert)) my_invert = invert
 
       nspins = SIZE(nlmo_env%m_theta)
 
@@ -594,7 +578,7 @@ CONTAINS
    END SUBROUTINE nlmo_env_compute_sigma0_ij
 
 ! **************************************************************************************************
-!> \brief
+!> \brief ...
 !> \param nlmo_env ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
@@ -604,10 +588,9 @@ CONTAINS
 
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
 
-      INTEGER                                            :: ispin, nspins, &
-                                                            nocc, para_group
-      TYPE(dbcsr_type)                                   :: tm_OO1
+      INTEGER                                            :: ispin, nocc, nspins, para_group
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diagonal
+      TYPE(dbcsr_type)                                   :: tm_OO1
 
       nspins = SIZE(nlmo_env%m_theta)
 
@@ -690,12 +673,13 @@ CONTAINS
 
       ENDDO ! ispin
 
-
    END SUBROUTINE nlmo_env_mainvar_to_aux
 
 ! **************************************************************************************************
-!> \brief
+!> \brief ...
 !> \param nlmo_env ...
+!> \param loss_components ...
+!> \param overlap_determinant ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -709,8 +693,8 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'nlmo_env_loss_function', &
          routineP = moduleN//':'//routineN
 
-      INTEGER                                            :: handle, idim0, ielem, ispin, nspins, &
-                                                            para_group, reim, nocc
+      INTEGER                                            :: handle, idim0, ielem, ispin, nocc, &
+                                                            nspins, para_group, reim
       REAL(KIND=dp)                                      :: det1, fval, local_function_ispin, &
                                                             penal_function_ispin
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: reim_diag, z2
@@ -811,7 +795,7 @@ CONTAINS
    END SUBROUTINE nlmo_env_loss_function
 
 ! **************************************************************************************************
-!> \brief
+!> \brief ...
 !> \param nlmo_env ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
@@ -971,7 +955,7 @@ CONTAINS
    END SUBROUTINE nlmo_env_loss_gradient
 
 ! **************************************************************************************************
-!> \brief
+!> \brief ...
 !> \param nlmo_env ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
@@ -989,8 +973,8 @@ CONTAINS
 
       nspins = SIZE(nlmo_env%m_theta)
 
-      d_bfgs=nlmo_env%d_bfgs
-      l_bfgs=nlmo_env%l_bfgs
+      d_bfgs = nlmo_env%d_bfgs
+      l_bfgs = nlmo_env%l_bfgs
 
       IF (d_bfgs .OR. l_bfgs) THEN
 
@@ -1025,8 +1009,11 @@ CONTAINS
    END SUBROUTINE nlmo_env_loss_hessian
 
 ! **************************************************************************************************
-!> \brief
+!> \brief ...
 !> \param nlmo_env ...
+!> \param step ...
+!> \param prev_grad ...
+!> \param prev_m_theta ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -1034,28 +1021,22 @@ CONTAINS
    SUBROUTINE nlmo_env_invert_hessian(nlmo_env, step, prev_grad, prev_m_theta)
 
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), OPTIONAL &
-                                                         :: step
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), OPTIONAL &
-                                                         :: prev_grad, &
-                                                            prev_m_theta
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), &
+         OPTIONAL                                        :: step, prev_grad, prev_m_theta
 
       INTEGER                                            :: ispin, nspins
       LOGICAL                                            :: d_bfgs, l_bfgs
       REAL(KIND=dp)                                      :: bfgs_rho, bfgs_sum
-      TYPE(dbcsr_type)                                   :: tempOccOcc1, &
-                                                            tempOccOcc2, &
-                                                            tempOccOcc3, &
-                                                            bfgs_s, &
-                                                            bfgs_y
+      TYPE(dbcsr_type)                                   :: bfgs_s, bfgs_y, tempOccOcc1, &
+                                                            tempOccOcc2, tempOccOcc3
 
-      d_bfgs=nlmo_env%d_bfgs
-      l_bfgs=nlmo_env%l_bfgs
+      d_bfgs = nlmo_env%d_bfgs
+      l_bfgs = nlmo_env%l_bfgs
 
       IF (d_bfgs) THEN
-         IF (.NOT.PRESENT(step) .OR. &
-             .NOT.PRESENT(prev_grad) .OR. &
-             .NOT.PRESENT(prev_m_theta)) THEN
+         IF (.NOT. PRESENT(step) .OR. &
+             .NOT. PRESENT(prev_grad) .OR. &
+             .NOT. PRESENT(prev_m_theta)) THEN
             CPABORT("Optinal arguments are required for diagonal BFGS")
          ENDIF
       ENDIF
@@ -1145,7 +1126,7 @@ CONTAINS
 
       ELSE IF (l_bfgs) THEN
 
-        ! Do nothing: limited memory BFGS does not compute inverted hessian explicitly
+         ! Do nothing: limited memory BFGS does not compute inverted hessian explicitly
 
       ELSE ! non-BFGS
 
@@ -1170,8 +1151,10 @@ CONTAINS
    END SUBROUTINE nlmo_env_invert_hessian
 
 ! **************************************************************************************************
-!> \brief
+!> \brief ...
 !> \param nlmo_env ...
+!> \param m_in ...
+!> \param m_out ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -1179,21 +1162,20 @@ CONTAINS
    SUBROUTINE nlmo_env_hessian_apply(nlmo_env, m_in, m_out)
 
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), &
+         OPTIONAL                                        :: m_in
       TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_out
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), OPTIONAL &
-                                                         :: m_in
 
-      INTEGER                                            :: ispin, nspins, dim0, idim0, reim
+      INTEGER                                            :: dim0, idim0, ispin, nspins, reim
       LOGICAL                                            :: d_bfgs, l_bfgs
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: tg_diagonal, z2
-      TYPE(dbcsr_type)                                   :: tm_oo_1, tm_oo_2, tm_oo_3, &
-                                                            tm_oo_4, tm_oo_5, tm_oo_6, &
-                                                            tm_oo_7, tm_oo_8
+      TYPE(dbcsr_type)                                   :: tm_oo_1, tm_oo_2, tm_oo_3, tm_oo_4, &
+                                                            tm_oo_5, tm_oo_6, tm_oo_7, tm_oo_8
 
       nspins = SIZE(nlmo_env%m_model_hessian)
 
-      d_bfgs=nlmo_env%d_bfgs
-      l_bfgs=nlmo_env%l_bfgs
+      d_bfgs = nlmo_env%d_bfgs
+      l_bfgs = nlmo_env%l_bfgs
 
       IF (d_bfgs .OR. l_bfgs) THEN
 
@@ -1426,11 +1408,11 @@ CONTAINS
                   ! gradient evaluation will fail for CASE 1 and 3
                   SELECT CASE (2) ! allows for selection of different spread functionals
                   CASE (1) ! functional =  -W_I * log( |z_I|^2 )
-                     z2(:) = nlmo_env%weights(idim0)/(z2(:) * z2(:))
+                     z2(:) = nlmo_env%weights(idim0)/(z2(:)*z2(:))
                   CASE (2) ! functional =  W_I * ( 1 - |z_I|^2 )
                      z2(:) = -nlmo_env%weights(idim0)
                   CASE (3) ! functional =  W_I * ( 1 - |z_I| )
-                     z2(:) = nlmo_env%weights(idim0)/(4*SQRT(z2(:) * z2(:) * z2(:)))
+                     z2(:) = nlmo_env%weights(idim0)/(4*SQRT(z2(:)*z2(:)*z2(:)))
                   END SELECT
                   CALL dbcsr_set(tm_oo_3, 0.0_dp)
                   CALL dbcsr_set_diag(tm_oo_3, z2)
@@ -1485,8 +1467,10 @@ CONTAINS
    END SUBROUTINE nlmo_env_hessian_apply
 
 ! **************************************************************************************************
-!> \brief
+!> \brief ...
 !> \param nlmo_env ...
+!> \param m_in ...
+!> \param m_out ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -1494,17 +1478,17 @@ CONTAINS
    SUBROUTINE nlmo_env_minus_hessian_inv_apply(nlmo_env, m_in, m_out)
 
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), &
+         OPTIONAL                                        :: m_in
       TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_out
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), OPTIONAL &
-                                                         :: m_in
 
       INTEGER                                            :: ispin, nspins
       LOGICAL                                            :: d_bfgs, l_bfgs
 
       nspins = SIZE(nlmo_env%m_model_hessian_inv)
 
-      d_bfgs=nlmo_env%d_bfgs
-      l_bfgs=nlmo_env%l_bfgs
+      d_bfgs = nlmo_env%d_bfgs
+      l_bfgs = nlmo_env%l_bfgs
 
       IF (d_bfgs) THEN
 
@@ -1569,6 +1553,11 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief This subroutine is obsolete. Do not call
 !> \param nlmo_env ...
+!> \param grad ...
+!> \param step ...
+!> \param prev_grad ...
+!> \param prev_m_theta ...
+!> \param iteration ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -1578,9 +1567,9 @@ CONTAINS
                                                    iteration)
       !RZK-critical: refactor using other hessian methods
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: grad
       TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: step
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: grad, prev_grad, &
-                                                            prev_m_theta
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: prev_grad, prev_m_theta
       INTEGER                                            :: iteration
 
       CHARACTER(len=*), PARAMETER :: routineN = 'nlmo_env_loss_curvature_grad_to_step', &
@@ -1589,16 +1578,13 @@ CONTAINS
       INTEGER                                            :: ispin, nspins
       LOGICAL                                            :: d_bfgs, l_bfgs
       REAL(KIND=dp)                                      :: bfgs_rho, bfgs_sum
-      TYPE(dbcsr_type)                                   :: tempOccOcc1, &
-                                                            tempOccOcc2, &
-                                                            tempOccOcc3, &
-                                                            bfgs_s, &
-                                                            bfgs_y
+      TYPE(dbcsr_type)                                   :: bfgs_s, bfgs_y, tempOccOcc1, &
+                                                            tempOccOcc2, tempOccOcc3
 
       nspins = SIZE(nlmo_env%m_theta)
 
-      d_bfgs=nlmo_env%d_bfgs
-      l_bfgs=nlmo_env%l_bfgs
+      d_bfgs = nlmo_env%d_bfgs
+      l_bfgs = nlmo_env%l_bfgs
 
       ! if available use second derivative info - bfgs, hessian, preconditioner
       IF (nlmo_env%hessian_type .EQ. xalmo_prec_identity) THEN ! no second derivatives
@@ -1739,7 +1725,7 @@ CONTAINS
    END SUBROUTINE nlmo_env_loss_curvature_grad_to_step
 
 ! **************************************************************************************************
-!> \brief
+!> \brief ...
 !> \param nlmo_env ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
@@ -1795,16 +1781,9 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Loss reduction for a given step is estimated using
 !>        gradient and hessian
-!> \param reduction_out ...
-!> \param grad_in ...
+!> \param nlmo_env ...
 !> \param step_in ...
-!> \param hess_in ...
-!> \param hess_submatrix_in ...
-!> \param quench_t_in ...
-!> \param special_case ...
-!> \param eps_filter ...
-!> \param domain_map ...
-!> \param cpu_of_domain ...
+!> \param reduction_out ...
 !> \par History
 !>       2019.12 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -1812,17 +1791,17 @@ CONTAINS
    SUBROUTINE nlmo_env_predicted_reduction(nlmo_env, step_in, reduction_out)
 
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
-      REAL(KIND=dp), INTENT(INOUT)                       :: reduction_out
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: step_in
+      REAL(KIND=dp), INTENT(INOUT)                       :: reduction_out
 
       INTEGER                                            :: ispin, nspins
       REAL(KIND=dp)                                      :: my_reduction, temp_real
-      TYPE(dbcsr_type), DIMENSION(:), ALLOCATABLE        :: m_temp_no
+      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: m_temp_no
 
       reduction_out = 0.0_dp
 
       nspins = SIZE(step_in)
-      ALLOCATE(m_temp_no(nspins))
+      ALLOCATE (m_temp_no(nspins))
 
       my_reduction = 0.0_dp
       ! Get y=Trace(Tr(step).grad)
@@ -1847,7 +1826,7 @@ CONTAINS
 
       ENDDO ! ispin
 
-      DEALLOCATE(m_temp_no)
+      DEALLOCATE (m_temp_no)
 
       ! RZK: do we need to multiply by the spin factor?
       ! Answer: NO, if the gradient and hessian are computed with the correct spin factors

@@ -107,8 +107,8 @@ CONTAINS
       INTEGER                                            :: handle
       TYPE(section_vals_type), POINTER :: almo_analysis_section, almo_opt_diis_section, &
          almo_opt_pcg_section, almo_scf_section, matrix_iterate_section, nlmo_opt_pcg_section, &
-         penalty_section, xalmo_opt_newton_pcg_section, xalmo_opt_pcg_section, &
-         xalmo_opt_trustr_section, nlmo_opt_trustr_section
+         nlmo_opt_trustr_section, penalty_section, xalmo_opt_newton_pcg_section, &
+         xalmo_opt_pcg_section, xalmo_opt_trustr_section
 
       CALL timeset(routineN, handle)
 
@@ -122,7 +122,7 @@ CONTAINS
       xalmo_opt_trustr_section => section_vals_get_subs_vals(almo_scf_section, &
                                                              "XALMO_OPTIMIZER_TRUSTR")
       nlmo_opt_trustr_section => section_vals_get_subs_vals(almo_scf_section, &
-                                                             "NLMO_OPTIMIZER_TRUSTR")
+                                                            "NLMO_OPTIMIZER_TRUSTR")
       nlmo_opt_pcg_section => section_vals_get_subs_vals(almo_scf_section, &
                                                          "NLMO_OPTIMIZER_PCG")
       almo_analysis_section => section_vals_get_subs_vals(almo_scf_section, "ANALYSIS")

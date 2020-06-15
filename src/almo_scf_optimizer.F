@@ -9126,22 +9126,22 @@ CONTAINS
       REAL(KIND=dp), INTENT(INOUT)                       :: step_size_out
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: metric_in, position_in, direction_in
       REAL(KIND=dp), INTENT(IN)                          :: trust_radius_in
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), OPTIONAL &
-                                                         :: quench_t_in
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), &
+         OPTIONAL                                        :: quench_t_in
       REAL(KIND=dp), INTENT(IN)                          :: eps_filter_in
 
-      INTEGER                                            :: isol, ispin, nsolutions, &
-                                                            nsolutions_found, nspins, &
-                                                            metric_nspins, metric_ispin
+      INTEGER                                            :: isol, ispin, metric_ispin, &
+                                                            metric_nspins, nsolutions, &
+                                                            nsolutions_found, nspins
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: nocc
+      LOGICAL                                            :: quencher
       REAL(KIND=dp)                                      :: discrim_sign, discriminant, solution, &
                                                             spin_factor, temp_real
       REAL(KIND=dp), DIMENSION(3)                        :: coef
       TYPE(dbcsr_type)                                   :: m_temp_no
-      LOGICAL                                            :: quencher
 
-      quencher=.FALSE.
-      IF (PRESENT(quench_t_in)) quencher=.TRUE.
+      quencher = .FALSE.
+      IF (PRESENT(quench_t_in)) quencher = .TRUE.
 
       step_size_out = 0.0_dp
 
@@ -9217,7 +9217,7 @@ CONTAINS
       discrim_sign = 1.0_dp
       nsolutions_found = 0
       DO isol = 1, nsolutions
-         solution = ( -coef(2) + discrim_sign*SQRT(discriminant) ) /(2.0_dp*coef(1))
+         solution = (-coef(2) + discrim_sign*SQRT(discriminant))/(2.0_dp*coef(1))
          IF (solution .GT. 0.0_dp) THEN
             nsolutions_found = nsolutions_found + 1
             step_size_out = solution
@@ -9249,19 +9249,19 @@ CONTAINS
 
       REAL(KIND=dp), INTENT(OUT)                         :: norm_out
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: matrix_in, metric_in
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), OPTIONAL &
-                                                         :: quench_t_in
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), &
+         OPTIONAL                                        :: quench_t_in
       REAL(KIND=dp), INTENT(IN)                          :: eps_filter_in
 
-      INTEGER                                            :: ispin, nspins, &
-                                                            metric_nspins, metric_ispin
-      TYPE(dbcsr_type)                                   :: m_temp_no
-      LOGICAL                                            :: quencher
+      INTEGER                                            :: ispin, metric_ispin, metric_nspins, &
+                                                            nspins
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: nocc
+      LOGICAL                                            :: quencher
       REAL(KIND=dp)                                      :: my_norm, spin_factor, temp_real
+      TYPE(dbcsr_type)                                   :: m_temp_no
 
-      quencher=.FALSE.
-      IF (PRESENT(quench_t_in)) quencher=.TRUE.
+      quencher = .FALSE.
+      IF (PRESENT(quench_t_in)) quencher = .TRUE.
 
       metric_nspins = SIZE(metric_in)
 
@@ -9335,20 +9335,20 @@ CONTAINS
       !RZK-critical: can be re-formulated without submatrices
       REAL(KIND=dp), INTENT(INOUT)                       :: reduction_out
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: grad_in, step_in, hess_in
-      REAL(KIND=dp), INTENT(IN)                          :: eps_filter
-      INTEGER, INTENT(IN), OPTIONAL                      :: special_case
       TYPE(domain_submatrix_type), DIMENSION(:, :), &
          INTENT(IN), OPTIONAL                            :: hess_submatrix_in
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), OPTIONAL &
-                                                         :: quench_t_in
-      TYPE(domain_map_type), DIMENSION(:), INTENT(IN), OPTIONAL &
-                                                         :: domain_map
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), &
+         OPTIONAL                                        :: quench_t_in
+      INTEGER, INTENT(IN), OPTIONAL                      :: special_case
+      REAL(KIND=dp), INTENT(IN)                          :: eps_filter
+      TYPE(domain_map_type), DIMENSION(:), INTENT(IN), &
+         OPTIONAL                                        :: domain_map
       INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: cpu_of_domain
 
       INTEGER                                            :: ispin, nspins
+      LOGICAL                                            :: case_is_special
       REAL(KIND=dp)                                      :: my_reduction, spin_factor, temp_real
       TYPE(dbcsr_type)                                   :: m_temp_no
-      LOGICAL                                            :: case_is_special
 
       case_is_special = .FALSE.
       IF (PRESENT(special_case)) THEN
@@ -9359,10 +9359,10 @@ CONTAINS
       ENDIF
 
       IF (case_is_special) THEN
-         IF (.NOT.PRESENT(cpu_of_domain) .OR. &
-             .NOT.PRESENT(domain_map) .OR. &
-             .NOT.PRESENT(hess_submatrix_in) .OR. &
-             .NOT.PRESENT(quench_t_in) ) THEN
+         IF (.NOT. PRESENT(cpu_of_domain) .OR. &
+             .NOT. PRESENT(domain_map) .OR. &
+             .NOT. PRESENT(hess_submatrix_in) .OR. &
+             .NOT. PRESENT(quench_t_in)) THEN
             CPABORT("More arguments are needed for this special case")
          ENDIF
       ENDIF

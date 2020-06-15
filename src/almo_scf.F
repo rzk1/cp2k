@@ -15,8 +15,8 @@ MODULE almo_scf
                                               almo_scf_t_rescaling,&
                                               almo_scf_t_to_proj,&
                                               distribute_domains,&
-                                              orthogonalize_mos,&
-                                              fill_matrix_with_ones
+                                              fill_matrix_with_ones,&
+                                              orthogonalize_mos
    USE almo_scf_optimizer,              ONLY: almo_scf_block_diagonal,&
                                               almo_scf_xalmo_eigensolver,&
                                               almo_scf_xalmo_pcg,&
@@ -57,12 +57,11 @@ MODULE almo_scf
    USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
         dbcsr_add, dbcsr_add_on_diag, dbcsr_binary_read, dbcsr_checksum, dbcsr_copy, dbcsr_create, &
-        dbcsr_distribution_get, dbcsr_distribution_type, dbcsr_filter, dbcsr_finalize, &
-        dbcsr_get_info, dbcsr_get_stored_coordinates, dbcsr_init_random, &
+        dbcsr_distribution_type, dbcsr_filter, dbcsr_finalize, dbcsr_get_info, dbcsr_init_random, &
         dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
-        dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, dbcsr_nblkcols_total, &
-        dbcsr_nblkrows_total, dbcsr_p_type, dbcsr_release, dbcsr_reserve_block2d, dbcsr_scale, &
-        dbcsr_set, dbcsr_type, dbcsr_type_no_symmetry, dbcsr_type_symmetric, dbcsr_work_create
+        dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, dbcsr_nblkrows_total, &
+        dbcsr_p_type, dbcsr_release, dbcsr_scale, dbcsr_set, dbcsr_type, dbcsr_type_no_symmetry, &
+        dbcsr_type_symmetric, dbcsr_work_create
    USE domain_submatrix_methods,        ONLY: init_submatrices,&
                                               release_submatrices
    USE input_constants,                 ONLY: &
@@ -1368,14 +1367,9 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'almo_scf_delocalization', &
          routineP = moduleN//':'//routineN
 
-      INTEGER                                            :: col, handle, hold, iblock_col, &
-                                                            iblock_row, ispin, mynode, &
-                                                            nblkcols_tot, nblkrows_tot, row, &
-                                                            unit_nr
-      LOGICAL                                            :: almo_experimental, tr
-      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: p_new_block
+      INTEGER                                            :: handle, ispin, unit_nr
+      LOGICAL                                            :: almo_experimental
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(dbcsr_distribution_type)                      :: dist
       TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: no_quench
       TYPE(optimizer_options_type)                       :: arbitrary_optimizer
 

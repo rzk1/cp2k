@@ -10,68 +10,37 @@
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
 MODULE nlmo_optimizer
-   USE almo_scf_qs,                     ONLY: almo_dm_to_almo_ks,&
-                                              almo_dm_to_qs_env,&
-                                              almo_scf_update_ks_energy,&
-                                              matrix_qs_to_almo
-   USE almo_scf_optimizer,              ONLY: trust_r_report, &
-                                              fixed_r_report, &
-                                              step_size_to_border, &
-                                              contravariant_matrix_norm, &
-                                              compute_cg_beta
+   USE almo_scf_optimizer,              ONLY: compute_cg_beta,&
+                                              contravariant_matrix_norm,&
+                                              fixed_r_report,&
+                                              step_size_to_border,&
+                                              trust_r_report
    USE almo_scf_types,                  ONLY: almo_scf_env_type,&
                                               optimizer_options_type
-   USE cell_types,                      ONLY: cell_type
-   USE cp_blacs_env,                    ONLY: cp_blacs_env_type
-   USE cp_dbcsr_cholesky,               ONLY: cp_dbcsr_cholesky_decompose,&
-                                              cp_dbcsr_cholesky_invert,&
-                                              cp_dbcsr_cholesky_restore
-   USE cp_external_control,             ONLY: external_control
-   USE cp_files,                        ONLY: close_file,&
-                                              open_file
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
-                                              cp_logger_type,&
-                                              cp_to_string
-   USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
-                                              cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
+                                              cp_logger_type
    USE dbcsr_api,                       ONLY: &
-        dbcsr_add, dbcsr_add_on_diag, dbcsr_copy, dbcsr_create, dbcsr_desymmetrize, &
-        dbcsr_distribution_get, dbcsr_distribution_type, dbcsr_dot, dbcsr_filter, dbcsr_finalize, &
-        dbcsr_frobenius_norm, dbcsr_func_dtanh, dbcsr_func_inverse, dbcsr_func_tanh, &
-        dbcsr_function_of_elements, dbcsr_get_block_p, dbcsr_get_diag, dbcsr_get_info, &
-        dbcsr_hadamard_product, dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, &
-        dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, &
-        dbcsr_nblkcols_total, dbcsr_nblkrows_total, dbcsr_norm, dbcsr_norm_maxabsnorm, &
-        dbcsr_p_type, dbcsr_print_block_sum, dbcsr_release, dbcsr_reserve_block2d, dbcsr_scale, &
-        dbcsr_set, dbcsr_set_diag, dbcsr_triu, dbcsr_type, dbcsr_type_no_symmetry, &
-        dbcsr_work_create, dbcsr_print
-   USE input_constants,                 ONLY: &
-        almo_scf_diag, almo_scf_dm_sign, cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, &
-        cg_hager_zhang, cg_hestenes_stiefel, cg_liu_storey, cg_polak_ribiere, cg_zero, &
-        trustr_cauchy, trustr_dogleg, virt_full, xalmo_case_block_diag, xalmo_case_fully_deloc, &
-        xalmo_case_normal, xalmo_prec_domain, xalmo_prec_full, xalmo_prec_identity, &
-        almo_scf_pcg, almo_scf_skip, almo_scf_trustr, xalmo_prec_lbfgs, xalmo_prec_dbfgs
-   USE iterate_matrix,                  ONLY: determinant,&
-                                              invert_Hotelling,&
-                                              matrix_sqrt_Newton_Schulz
+        dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_dot, dbcsr_filter, dbcsr_multiply, dbcsr_norm, &
+        dbcsr_norm_maxabsnorm, dbcsr_release, dbcsr_scale, dbcsr_set, dbcsr_type, &
+        dbcsr_type_no_symmetry
+   USE input_constants,                 ONLY: almo_scf_pcg,&
+                                              almo_scf_trustr,&
+                                              trustr_cauchy,&
+                                              trustr_dogleg,&
+                                              xalmo_prec_dbfgs,&
+                                              xalmo_prec_lbfgs
+   USE iterate_matrix,                  ONLY: determinant
    USE kinds,                           ONLY: dp
-   USE machine,                         ONLY: m_flush,&
-                                              m_walltime
-   USE message_passing,                 ONLY: mp_sum
-   USE nlmo_types,                      ONLY: nlmo_env_type
+   USE machine,                         ONLY: m_walltime
    USE nlmo_methods,                    ONLY: &
-        nlmo_env_init, nlmo_env_allocate_all, nlmo_env_compute_BK_ij, nlmo_env_compute_sigma0_ij, &
-        nlmo_env_deallocate_all, nlmo_env_loss_curvature_grad_to_step, nlmo_env_loss_function, &
-        nlmo_env_loss_gradient, nlmo_env_mainvar_initial_guess, nlmo_env_mainvar_to_aux, &
-        nlmo_env_predicted_reduction, nlmo_env_hessian_apply, &
-        nlmo_env_set_flags, nlmo_env_invert_hessian, nlmo_env_loss_hessian, nlmo_env_release
-   USE qs_energy_types,                 ONLY: qs_energy_type
-   USE qs_environment_types,            ONLY: get_qs_env,&
-                                              qs_environment_type
-   USE qs_loc_utils,                    ONLY: compute_berry_operator
-   USE qs_localization_methods,         ONLY: initialize_weights
+        nlmo_env_allocate_all, nlmo_env_compute_BK_ij, nlmo_env_compute_sigma0_ij, &
+        nlmo_env_deallocate_all, nlmo_env_hessian_apply, nlmo_env_init, nlmo_env_invert_hessian, &
+        nlmo_env_loss_curvature_grad_to_step, nlmo_env_loss_function, nlmo_env_loss_gradient, &
+        nlmo_env_loss_hessian, nlmo_env_mainvar_initial_guess, nlmo_env_mainvar_to_aux, &
+        nlmo_env_predicted_reduction, nlmo_env_release, nlmo_env_set_flags
+   USE nlmo_types,                      ONLY: nlmo_env_type
+   USE qs_environment_types,            ONLY: qs_environment_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -271,8 +240,8 @@ CONTAINS
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
    SUBROUTINE construct_nlmos_pcg(qs_env, nlmo_env, optimizer, &
-                                       matrix_s, matrix_mo_inout, &
-                                       matrix_templateOO)
+                                  matrix_s, matrix_mo_inout, &
+                                  matrix_templateOO)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
       TYPE(optimizer_options_type), INTENT(INOUT)        :: optimizer
@@ -687,16 +656,11 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Optimization of ALMOs using trust region minimizers
 !> \param qs_env ...
-!> \param almo_scf_env ...
+!> \param nlmo_env ...
 !> \param optimizer   controls the optimization algorithm
-!> \param quench_t ...
-!> \param matrix_t_in ...
-!> \param matrix_t_out ...
-!> \param perturbation_only - perturbative (do not update Hamiltonian)
-!> \param special_case   to reduce the overhead special cases are implemented:
-!>                       xalmo_case_normal - no special case (i.e. xALMOs)
-!>                       xalmo_case_block_diag
-!>                       xalmo_case_fully_deloc
+!> \param matrix_s ...
+!> \param matrix_mo_inout ...
+!> \param matrix_templateOO ...
 !> \par History
 !>       2020.01 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -717,22 +681,24 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'construct_nlmos_trustr', &
          routineP = moduleN//':'//routineN
 
-      INTEGER :: handle, ispin, iteration, iteration_type_to_report, my_special_case, ndomains, &
-         nspins, outer_iteration, prec_type, unit_nr
-      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: nocc
-      LOGICAL :: assume_t0_q0x, border_reached, inner_loop_success, normalize_orbitals, &
-         optimize_theta, penalty_occ_vol, reset_conjugator, same_position, scf_converged
+      INTEGER                                            :: handle, ispin, iteration, &
+                                                            iteration_type_to_report, nspins, &
+                                                            outer_iteration, unit_nr
+      LOGICAL                                            :: border_reached, inner_loop_success, &
+                                                            reset_conjugator, same_position, &
+                                                            scf_converged
       REAL(kind=dp) :: beta, energy_start, energy_trial, eta, expected_reduction, &
          fake_step_size_to_report, grad_norm_ratio, grad_norm_ref, loss_change_to_report, &
-         loss_start, loss_trial, model_grad_norm, penalty_amplitude, penalty_start, penalty_trial, &
-         radius_current, radius_max, real_temp, rho, spin_factor, step_norm, step_size, t1, &
-         t1outer, t2, t2outer, y_scalar
+         loss_start, loss_trial, model_grad_norm, penalty_start, penalty_trial, radius_current, &
+         radius_max, real_temp, rho, spin_factor, step_norm, step_size, t1, t1outer, t2, t2outer, &
+         y_scalar
       REAL(kind=dp), ALLOCATABLE, DIMENSION(:)           :: grad_norm_spin
-      TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:) :: m_model_Bd, m_model_d, &
-         m_model_r, m_model_r_prev, m_model_rt, &
-         m_model_rt_prev, m_theta_saved, prev_step, step
       REAL(KIND=dp), DIMENSION(2)                        :: loss_components, overlap_determinant
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: m_model_Bd, m_model_d, m_model_r, &
+                                                            m_model_r_prev, m_model_rt, &
+                                                            m_model_rt_prev, m_theta_saved, &
+                                                            prev_step, step
 
       CALL timeset(routineN, handle)
 
@@ -749,8 +715,8 @@ CONTAINS
       nspins = SIZE(matrix_mo_inout)
       CALL nlmo_env_set_flags(nlmo_env=nlmo_env, &
                               optimizer=optimizer)
-      IF (nlmo_env%hessian_type.EQ.xalmo_prec_lbfgs .OR. &
-          nlmo_env%hessian_type.EQ.xalmo_prec_dbfgs) THEN
+      IF (nlmo_env%hessian_type .EQ. xalmo_prec_lbfgs .OR. &
+          nlmo_env%hessian_type .EQ. xalmo_prec_dbfgs) THEN
          CPABORT("BFGS cannot be combined with BFGS")
       ENDIF
       CALL nlmo_env_allocate_all(nlmo_env=nlmo_env, &

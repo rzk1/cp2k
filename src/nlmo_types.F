@@ -11,9 +11,7 @@
 ! **************************************************************************************************
 MODULE nlmo_types
    USE almo_scf_lbfgs_types,            ONLY: lbfgs_history_type
-   USE cp_blacs_env,                    ONLY: cp_blacs_env_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
-   USE dbcsr_api,                       ONLY: dbcsr_p_type, &
+   USE dbcsr_api,                       ONLY: dbcsr_p_type,&
                                               dbcsr_type
    USE kinds,                           ONLY: dp
 #include "./base/base_uses.f90"
