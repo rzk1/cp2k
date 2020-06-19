@@ -46,6 +46,7 @@ MODULE almo_scf_types
    ! methods that add penalty terms to the energy functional
    TYPE penalty_type
 
+      LOGICAL            :: penalty_is_on
       REAL(KIND=dp)      :: final_determinant, penalty_strength, &
                             determinant_tolerance, penalty_strength_dec_factor
 
@@ -375,6 +376,7 @@ MODULE almo_scf_types
       TYPE(optimizer_options_type)                   :: opt_xalmo_trustr
       TYPE(optimizer_options_type)                   :: opt_xalmo_newton_pcg_solver
       TYPE(optimizer_options_type)                   :: opt_k_pcg
+      TYPE(penalty_type)                             :: xalmo_penalty
 
       ! keywords that control electron delocalization treatment
       ! RZK-warning: many of these varibles should be collected

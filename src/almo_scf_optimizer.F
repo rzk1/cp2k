@@ -7832,11 +7832,12 @@ CONTAINS
       ENDIF
 
       ! penalty amplitude adjusts the strength of volume conservation
+RZK-PENALTY: flag to use the penalty
       penalty_occ_vol = .FALSE.
       !(almo_scf_env%penalty%occ_vol_method .NE. almo_occ_vol_penalty_none .AND. &
       !                   my_special_case .EQ. xalmo_case_fully_deloc)
       normalize_orbitals = penalty_occ_vol
-      penalty_amplitude = 0.0_dp !almo_scf_env%penalty%occ_vol_coeff
+      penalty_amplitude = almo_scf_env%xalmo_penalty%penalty_strength
       ALLOCATE (penalty_occ_vol_g_prefactor(nspins))
       ALLOCATE (penalty_occ_vol_h_prefactor(nspins))
       penalty_occ_vol_g_prefactor(:) = 0.0_dp
@@ -8015,7 +8016,7 @@ CONTAINS
 
       same_position = .FALSE.
 
-      ! compute the energy
+      ! compute the energy and all necessary penalty functions
       CALL main_var_to_xalmos_and_loss_func( &
          almo_scf_env=almo_scf_env, &
          qs_env=qs_env, &
@@ -8043,6 +8044,8 @@ CONTAINS
       ENDIF
       DO ispin = 1, nspins
          IF (penalty_occ_vol) THEN
+RZK-PENALTY: re-think the meaning of the penalty amplitude and extensivity
+Is it necessary to carry around the g_ h_ prefactors?
             penalty_occ_vol_g_prefactor(ispin) = &
                -2.0_dp*penalty_amplitude*spin_factor*nocc(ispin)
             penalty_occ_vol_h_prefactor(ispin) = 0.0_dp

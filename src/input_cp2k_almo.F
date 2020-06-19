@@ -49,6 +49,9 @@ MODULE input_cp2k_almo
    INTEGER, PARAMETER, PRIVATE :: optimizer_nlmo_pcg = 6
    INTEGER, PARAMETER, PRIVATE :: optimizer_nlmo_trustr = 7
 
+   INTEGER, PARAMETER, PRIVATE :: penalty_nlmo = 1
+   INTEGER, PARAMETER, PRIVATE :: penalty_xalmo = 2
+
    PUBLIC :: create_almo_scf_section
 
 CONTAINS
@@ -579,7 +582,12 @@ CONTAINS
       CALL section_release(subsection)
 
       NULLIFY (subsection)
-      CALL create_penalty_section(subsection)
+      CALL create_penalty_section(subsection, penalty_nlmo)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+      NULLIFY (subsection)
+      CALL create_penalty_section(subsection, penalty_xalmo)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
 
@@ -898,29 +906,39 @@ CONTAINS
 !>       2018.01 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
-   SUBROUTINE create_penalty_section(section)
+   SUBROUTINE create_penalty_section(section, penalty_id)
 
       TYPE(section_type), POINTER                        :: section
+      INTEGER, INTENT(IN)                                :: penalty_id
 
       TYPE(keyword_type), POINTER                        :: keyword
 
       CPASSERT(.NOT. ASSOCIATED(section))
       NULLIFY (section)
 
-      CALL section_create(section, __LOCATION__, name="NLMO_PENALTY", &
-                          description="Controls the optimization of the strength of the orthogonalization penalty term.", &
-                          n_keywords=4, n_subsections=0, repeats=.FALSE.)
+      SELECT CASE (penalty_id)
+      CASE (penalty_nlmo)
+         CALL section_create(section, __LOCATION__, name="NLMO_PENALTY", &
+                             description="Controls the optimization of the strength of the orthogonalization penalty term.", &
+                             n_keywords=4, n_subsections=0, repeats=.FALSE.)
+      CASE (penalty_xalmo)
+         CALL section_create(section, __LOCATION__, name="XALMO_PENALTY", &
+                             description="Prevents collapse of the subspace spanned by XALMOs.", &
+                             n_keywords=4, n_subsections=0, repeats=.FALSE.)
+      CASE DEFAULT
+         CPABORT("No default values allowed")
+      END SELECT
 
       NULLIFY (keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="PENALTY_STRENGTH", &
                           description="Strength of the orthogonalization penalty", &
-                          usage="PENALTY_STRENGTH 1.1", default_r_val=1.1_dp)
+                          usage="PENALTY_STRENGTH 1.1", default_r_val=0.0_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="PENALTY_STRENGTH_DECREASE_FACTOR", &
-                          description="Factor that decreases the strength of the orthogonalization penalty.", &
+                          description="Decrease factor of the penalty strength.", &
                           usage="PENALTY_STRENGTH_DECREASE_FACTOR 1.1", default_r_val=1.1_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -933,7 +951,7 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="FINAL_DETERMINANT", &
-                          description="The final determinant that obtained after optimization.", &
+                          description="The lowest allowed overlap determinant.", &
                           usage="FINAL_DETERMINANT 0.1", default_r_val=0.1_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
