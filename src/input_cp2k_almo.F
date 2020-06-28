@@ -931,9 +931,18 @@ CONTAINS
 
       NULLIFY (keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="_SECTION_PARAMETERS_", &
+                          description="Activates penalty function based on cP*ln(det(sigma)), "// &
+                          "where sigma is the MO overlap matrix.", &
+                          !usage="& T", &
+                          default_l_val=.FALSE., &
+                          lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="PENALTY_STRENGTH", &
                           description="Strength of the orthogonalization penalty", &
-                          usage="PENALTY_STRENGTH 1.1", default_r_val=0.0_dp)
+                          usage="PENALTY_STRENGTH 1.1", default_r_val=1.1_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 

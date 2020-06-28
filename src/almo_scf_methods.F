@@ -50,9 +50,11 @@ MODULE almo_scf_methods
                                               spd_inversion_ls_taylor
    USE iterate_matrix,                  ONLY: invert_Hotelling,&
                                               invert_Taylor,&
+                                              determinant,&
                                               matrix_sqrt_Newton_Schulz
    USE kinds,                           ONLY: dp
    USE mathlib,                         ONLY: binomial
+   USE message_passing,                 ONLY: mp_sum
    USE util,                            ONLY: sort
 #include "./base/base_uses.f90"
 
@@ -77,6 +79,7 @@ MODULE almo_scf_methods
       almo_scf_ks_to_ks_xx, &
       construct_domain_r_down, &
       xalmo_initial_guess, &
+      sig_diag_inv_det, &
       fill_matrix_with_ones
 
 CONTAINS
@@ -1486,6 +1489,63 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE get_overlap
+
+! **************************************************************************************************
+!> \brief Compute ((sigma)_diagonal)^(-1) and its determinant from sigma
+!> \param m_sigma_in - sigma matrix to start with
+!> \param nocc_of_domain_in - information about zero-size blocks
+!> \param m_sig_diag_inv_out - final result
+!> \param determinant_out - determinant of the final matrix
+!> \param eps_filter ...
+!> \par History
+!>       2020.06 created [Rustam Z Khaliullin]
+!> \author Rustam Z Khaliullin
+! **************************************************************************************************
+   SUBROUTINE sig_diag_inv_det(m_sigma_in, nocc_of_domain_in, m_sig_diag_inv_out, &
+      det_sigma_out, det_sig_diag_inv_out, eps_filter)
+
+      TYPE(dbcsr_type), INTENT(IN)                       :: m_sigma_in
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: nocc_of_domain_in
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: m_sig_diag_inv_out
+      REAL(KIND=dp), INTENT(INOUT)                       :: det_sigma_out, det_sig_diag_inv_out
+      REAL(KIND=dp), INTENT(IN)                          :: eps_filter
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'sig_diag_inv_det', &
+         routineP = moduleN//':'//routineN
+
+      INTEGER                                            :: dim0, handle, group
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diagonal
+      !TYPE(dbcsr_type)                                   :: m_sig_diag
+
+      CALL timeset(routineN, handle)
+
+      CALL dbcsr_copy(m_sig_diag_inv_out, m_sigma_in)
+      CALL dbcsr_get_info(m_sigma_in, nfullrows_total=dim0, group=group)
+      CALL set_zero_electron_blocks_in_mo_mo_matrix(m_sig_diag_inv_out, nocc_of_domain_in, 1.0_dp)
+
+      ! compute the determinant of the full sigma matrix
+      CALL determinant(m_sig_diag_inv_out, det_sigma_out, eps_filter)
+
+      ALLOCATE (diagonal(dim0))
+      CALL dbcsr_get_diag(m_sig_diag_inv_out, diagonal)
+
+      CALL mp_sum(diagonal, group)
+      det_sig_diag_inv_out = 1.0_dp/PRODUCT(diagonal)
+
+      !RZK-PENALTY: Does the mp_sum mess up subsequent set_diagonal?
+
+      ! create diagonal SQRTI matrix
+      diagonal(:) = 1.0_dp/(diagonal(:))
+      CALL dbcsr_set(m_sig_diag_inv_out, 0.0_dp)
+      CALL dbcsr_set_diag(m_sig_diag_inv_out, diagonal)
+      CALL dbcsr_filter(m_sig_diag_inv_out, eps_filter)
+      DEALLOCATE (diagonal)
+
+      CALL set_zero_electron_blocks_in_mo_mo_matrix(m_sig_diag_inv_out, nocc_of_domain_in, 0.0_dp)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE sig_diag_inv_det
 
 ! **************************************************************************************************
 !> \brief orthogonalize MOs

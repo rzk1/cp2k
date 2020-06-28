@@ -22,7 +22,7 @@ MODULE almo_scf_optimizer
         almo_scf_t_to_proj, apply_domain_operators, apply_projector, &
         construct_domain_preconditioner, construct_domain_r_down, construct_domain_s_inv, &
         construct_domain_s_sqrt, get_overlap, orthogonalize_mos, pseudo_invert_diagonal_blk, &
-        xalmo_initial_guess
+        xalmo_initial_guess, sig_diag_inv_det
    USE almo_scf_qs,                     ONLY: almo_dm_to_almo_ks,&
                                               almo_dm_to_qs_env,&
                                               almo_scf_update_ks_energy,&
@@ -888,13 +888,12 @@ CONTAINS
          line_search_error, localiz_coeff, localization_obj_function, next_step_size_guess, &
          penalty_amplitude, penalty_func_new, spin_factor, step_size, t1, t2, tempreal
       REAL(kind=dp), ALLOCATABLE, DIMENSION(:)           :: grad_norm_spin, &
-                                                            penalty_occ_vol_g_prefactor, &
-                                                            penalty_occ_vol_h_prefactor
+                                                            penalty_occ_vol_g_prefactor
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: qs_matrix_s
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: op_sm_set_almo, op_sm_set_qs
-      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:) :: FTsiginv, grad, m_sig_sqrti_ii, m_t_in_local, &
+      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:) :: FTsiginv, grad, m_sig_diag_inv, m_t_in_local, &
          m_theta, prec_vv, prev_grad, prev_minus_prec_grad, prev_step, siginvTFTsiginv, ST, step, &
          STsiginv_0, tempNOcc, tempNOcc_1, tempOccOcc
       TYPE(domain_submatrix_type), ALLOCATABLE, &
@@ -961,9 +960,7 @@ CONTAINS
       !.NE. penalty_type_none .AND. my_special_case .EQ. xalmo_case_fully_deloc )
       normalize_orbitals = penalty_occ_vol .OR. penalty_occ_local
       ALLOCATE (penalty_occ_vol_g_prefactor(nspins))
-      ALLOCATE (penalty_occ_vol_h_prefactor(nspins))
       penalty_occ_vol_g_prefactor(:) = 0.0_dp
-      penalty_occ_vol_h_prefactor(:) = 0.0_dp
       penalty_func_new = 0.0_dp
 
       ! preconditioner control
@@ -1078,7 +1075,7 @@ CONTAINS
       ALLOCATE (prev_step(nspins))
       ALLOCATE (step(nspins))
       ALLOCATE (prev_minus_prec_grad(nspins))
-      ALLOCATE (m_sig_sqrti_ii(nspins))
+      ALLOCATE (m_sig_diag_inv(nspins))
       ALLOCATE (tempNOcc(nspins))
       ALLOCATE (tempNOcc_1(nspins))
       ALLOCATE (tempOccOcc(nspins))
@@ -1115,7 +1112,7 @@ CONTAINS
          CALL dbcsr_create(prev_minus_prec_grad(ispin), &
                            template=matrix_t_out(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(m_sig_sqrti_ii(ispin), &
+         CALL dbcsr_create(m_sig_diag_inv(ispin), &
                            template=almo_scf_env%matrix_sigma_inv(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(tempNOcc(ispin), &
@@ -1273,9 +1270,10 @@ CONTAINS
                qs_env=qs_env, &
                m_main_var_in=m_theta, &
                m_t_out=matrix_t_out, &
-               m_sig_sqrti_ii_out=m_sig_sqrti_ii, &
                energy_out=energy_new, &
                penalty_out=penalty_func_new, &
+               !m_sig_sqrti_ii_out=m_sig_sqrti_ii, &
+               m_sig_diag_inv_out=m_sig_diag_inv, &
                m_FTsiginv_out=FTsiginv, &
                m_siginvTFTsiginv_out=siginvTFTsiginv, &
                m_ST_out=ST, &
@@ -1285,7 +1283,7 @@ CONTAINS
                assume_t0_q0x=assume_t0_q0x, &
                just_started=just_started, &
                optimize_theta=optimize_theta, &
-               normalize_orbitals=normalize_orbitals, &
+               !normalize_orbitals=normalize_orbitals, &
                perturbation_only=perturbation_only, &
                do_penalty=penalty_occ_vol, &
                special_case=my_special_case)
@@ -1297,7 +1295,6 @@ CONTAINS
                IF (penalty_occ_vol) THEN
                   penalty_occ_vol_g_prefactor(ispin) = &
                      -2.0_dp*penalty_amplitude*spin_factor*nocc(ispin)
-                  penalty_occ_vol_h_prefactor(ispin) = 0.0_dp
                ENDIF
             ENDDO
 
@@ -1392,8 +1389,6 @@ CONTAINS
 
                   CALL compute_gradient( &
                      m_grad_out=grad(ispin), &
-                     m_ks=almo_scf_env%matrix_ks(ispin), &
-                     m_s=almo_scf_env%matrix_s(1), &
                      m_t=matrix_t_out(ispin), &
                      m_t0=almo_scf_env%matrix_t_blk(ispin), &
                      m_siginv=almo_scf_env%matrix_sigma_inv(ispin), &
@@ -1403,16 +1398,15 @@ CONTAINS
                      m_ST=ST(ispin), &
                      m_STsiginv0=STsiginv_0(ispin), &
                      m_theta=m_theta(ispin), &
-                     m_sig_sqrti_ii=m_sig_sqrti_ii(ispin), &
+                     m_sig_diag_inv=m_sig_diag_inv(ispin), &
                      domain_s_inv=almo_scf_env%domain_s_inv(:, ispin), &
                      domain_r_down=domain_r_down(:, ispin), &
                      cpu_of_domain=almo_scf_env%cpu_of_domain, &
                      domain_map=almo_scf_env%domain_map(ispin), &
                      assume_t0_q0x=assume_t0_q0x, &
                      optimize_theta=optimize_theta, &
-                     normalize_orbitals=normalize_orbitals, &
-                     penalty_occ_vol=penalty_occ_vol, &
-                     penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin), &
+                     do_orthogonalization_penalty=penalty_occ_vol, &
+                     orthogonalization_penalty_prefactor=penalty_occ_vol_g_prefactor(ispin), &
                      envelope_amplitude=almo_scf_env%envelope_amplitude, &
                      eps_filter=almo_scf_env%eps_filter, &
                      spin_factor=spin_factor, &
@@ -1446,6 +1440,7 @@ CONTAINS
                         m_FTsiginv=FTsiginv(ispin), &
                         m_siginvTFTsiginv=siginvTFTsiginv(ispin), &
                         m_ST=ST(ispin), &
+                        m_sig_diag_inv=m_sig_diag_inv(ispin), &
                         para_env=almo_scf_env%para_env, &
                         blacs_env=almo_scf_env%blacs_env, &
                         nocc_of_domain=almo_scf_env%nocc_of_domain(:, ispin), &
@@ -1456,8 +1451,8 @@ CONTAINS
                         cpu_of_domain=almo_scf_env%cpu_of_domain, &
                         domain_map=almo_scf_env%domain_map(ispin), &
                         assume_t0_q0x=assume_t0_q0x, &
-                        penalty_occ_vol=penalty_occ_vol, &
-                        penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin), &
+                        do_orthogonalization_penalty=penalty_occ_vol, &
+                        orthogonalization_penalty_prefactor=penalty_occ_vol_g_prefactor(ispin), &
                         eps_filter=almo_scf_env%eps_filter, &
                         neg_thr=optimizer%neglect_threshold, &
                         spin_factor=spin_factor, &
@@ -1606,7 +1601,7 @@ CONTAINS
                         m_siginvTFTsiginv=siginvTFTsiginv(:), &
                         m_ST=ST(:), &
                         m_t=matrix_t_out(:), &
-                        m_sig_sqrti_ii=m_sig_sqrti_ii(:), &
+                        m_sig_diag_inv=m_sig_diag_inv(:), &
                         domain_s_inv=almo_scf_env%domain_s_inv(:, :), &
                         domain_r_down=domain_r_down(:, :), &
                         domain_map=almo_scf_env%domain_map(:), &
@@ -1619,7 +1614,6 @@ CONTAINS
                         penalty_occ_vol=penalty_occ_vol, &
                         normalize_orbitals=normalize_orbitals, &
                         penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(:), &
-                        penalty_occ_vol_pf2=penalty_occ_vol_h_prefactor(:), &
                         special_case=my_special_case &
                         )
 
@@ -1643,6 +1637,7 @@ CONTAINS
                               m_FTsiginv=FTsiginv(ispin), &
                               m_siginvTFTsiginv=siginvTFTsiginv(ispin), &
                               m_ST=ST(ispin), &
+                              m_sig_diag_inv=m_sig_diag_inv(ispin), &
                               para_env=almo_scf_env%para_env, &
                               blacs_env=almo_scf_env%blacs_env, &
                               nocc_of_domain=almo_scf_env%nocc_of_domain(:, ispin), &
@@ -1651,8 +1646,8 @@ CONTAINS
                               cpu_of_domain=almo_scf_env%cpu_of_domain, &
                               domain_map=almo_scf_env%domain_map(ispin), &
                               assume_t0_q0x=assume_t0_q0x, &
-                              penalty_occ_vol=penalty_occ_vol, &
-                              penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin), &
+                              do_orthogonalization_penalty=penalty_occ_vol, &
+                              orthogonalization_penalty_prefactor=penalty_occ_vol_g_prefactor(ispin), &
                               eps_filter=almo_scf_env%eps_filter, &
                               neg_thr=0.5_dp, &
                               spin_factor=spin_factor, &
@@ -1928,7 +1923,7 @@ CONTAINS
          CALL dbcsr_release(prev_minus_prec_grad(ispin))
          CALL dbcsr_release(m_theta(ispin))
          CALL dbcsr_release(m_t_in_local(ispin))
-         CALL dbcsr_release(m_sig_sqrti_ii(ispin))
+         CALL dbcsr_release(m_sig_diag_inv(ispin))
          CALL release_submatrices(domain_r_down(:, ispin))
          CALL release_submatrices(bad_modes_projector_down(:, ispin))
          CALL dbcsr_release(tempNOcc(ispin))
@@ -1949,13 +1944,12 @@ CONTAINS
       DEALLOCATE (prev_step)
       DEALLOCATE (step)
       DEALLOCATE (prev_minus_prec_grad)
-      DEALLOCATE (m_sig_sqrti_ii)
+      DEALLOCATE (m_sig_diag_inv)
 
       DEALLOCATE (domain_r_down)
       DEALLOCATE (bad_modes_projector_down)
 
       DEALLOCATE (penalty_occ_vol_g_prefactor)
-      DEALLOCATE (penalty_occ_vol_h_prefactor)
       DEALLOCATE (grad_norm_spin)
       DEALLOCATE (nocc)
 
@@ -4912,8 +4906,6 @@ CONTAINS
 ! *****************************************************************************
 !> \brief Compute the gradient wrt the main variable (e.g. Theta, X)
 !> \param m_grad_out ...
-!> \param m_ks ...
-!> \param m_s ...
 !> \param m_t ...
 !> \param m_t0 ...
 !> \param m_siginv ...
@@ -4929,15 +4921,15 @@ CONTAINS
 !> \param domain_map ...
 !> \param assume_t0_q0x ...
 !> \param optimize_theta ...
-!> \param normalize_orbitals ...
-!> \param penalty_occ_vol ...
+!> \param do_orthogonalization_penalty ...
 !> \param penalty_occ_local ...
-!> \param penalty_occ_vol_prefactor ...
+!> \param orthogonalization_penalty_prefactor...
 !> \param envelope_amplitude ...
 !> \param eps_filter ...
 !> \param spin_factor ...
 !> \param special_case ...
 !> \param m_sig_sqrti_ii ...
+!> \param m_sig_diag_inv ...
 !> \param op_sm_set ...
 !> \param weights ...
 !> \param energy_coeff ...
@@ -4946,17 +4938,17 @@ CONTAINS
 !>       2015.03 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
-   SUBROUTINE compute_gradient(m_grad_out, m_ks, m_s, m_t, m_t0, &
+   SUBROUTINE compute_gradient(m_grad_out, m_t, m_t0, &
                                m_siginv, m_quench_t, m_FTsiginv, m_siginvTFTsiginv, m_ST, m_STsiginv0, &
                                m_theta, domain_s_inv, domain_r_down, &
                                cpu_of_domain, domain_map, assume_t0_q0x, optimize_theta, &
-                               normalize_orbitals, penalty_occ_vol, penalty_occ_local, &
-                               penalty_occ_vol_prefactor, envelope_amplitude, eps_filter, spin_factor, &
-                               special_case, m_sig_sqrti_ii, op_sm_set, weights, energy_coeff, &
+                               do_orthogonalization_penalty, penalty_occ_local, &
+                               orthogonalization_penalty_prefactor, envelope_amplitude, eps_filter, spin_factor, &
+                               special_case, m_sig_diag_inv, m_sig_sqrti_ii, op_sm_set, weights, energy_coeff, &
                                localiz_coeff)
 
       TYPE(dbcsr_type), INTENT(INOUT)                    :: m_grad_out
-      TYPE(dbcsr_type), INTENT(IN)                       :: m_ks, m_s, m_t, m_t0, m_siginv, &
+      TYPE(dbcsr_type), INTENT(IN)                       :: m_t, m_t0, m_siginv, &
                                                             m_quench_t, m_FTsiginv, &
                                                             m_siginvTFTsiginv, m_ST, m_STsiginv0, &
                                                             m_theta
@@ -4965,12 +4957,13 @@ CONTAINS
       INTEGER, DIMENSION(:), INTENT(IN)                  :: cpu_of_domain
       TYPE(domain_map_type), INTENT(IN)                  :: domain_map
       LOGICAL, INTENT(IN)                                :: assume_t0_q0x, optimize_theta, &
-                                                            normalize_orbitals, penalty_occ_vol
+                                                            do_orthogonalization_penalty
       LOGICAL, INTENT(IN), OPTIONAL                      :: penalty_occ_local
-      REAL(KIND=dp), INTENT(IN)                          :: penalty_occ_vol_prefactor, &
+      REAL(KIND=dp), INTENT(IN)                          :: orthogonalization_penalty_prefactor, &
                                                             envelope_amplitude, eps_filter, &
                                                             spin_factor
       INTEGER, INTENT(IN)                                :: special_case
+      TYPE(dbcsr_type), INTENT(IN)                       :: m_sig_diag_inv
       TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: m_sig_sqrti_ii
       TYPE(dbcsr_p_type), DIMENSION(:, :), OPTIONAL, &
          POINTER                                         :: op_sm_set
@@ -4980,11 +4973,10 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'compute_gradient', &
          routineP = moduleN//':'//routineN
 
-      INTEGER                                            :: dim0, handle, idim0, nao, reim
-      LOGICAL                                            :: my_penalty_local
+      INTEGER                                            :: dim0, handle, idim0, reim
+      LOGICAL                                            :: my_penalty_local, normalize_orbitals
       REAL(KIND=dp)                                      :: coeff, energy_g_norm, my_energy_coeff, &
-                                                            my_localiz_coeff, &
-                                                            penalty_occ_vol_g_norm
+                                                            my_localiz_coeff
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: tg_diagonal
       TYPE(dbcsr_type)                                   :: m_tmp_no_1, m_tmp_no_2, m_tmp_no_3, &
                                                             m_tmp_oo_1, m_tmp_oo_2, temp1, temp2, &
@@ -4992,13 +4984,9 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      IF (normalize_orbitals .AND. (.NOT. PRESENT(m_sig_sqrti_ii))) THEN
-         CPABORT("Normalization matrix is required")
-      ENDIF
-
       my_penalty_local = .FALSE.
-      my_localiz_coeff = 1.0_dp
-      my_energy_coeff = 0.0_dp
+      my_localiz_coeff = 0.0_dp
+      my_energy_coeff = 1.0_dp
       IF (PRESENT(localiz_coeff)) THEN
          my_localiz_coeff = localiz_coeff
       ENDIF
@@ -5008,11 +4996,6 @@ CONTAINS
       IF (PRESENT(penalty_occ_local)) THEN
          my_penalty_local = penalty_occ_local
       ENDIF
-
-      ! use this otherways unused variables
-      CALL dbcsr_get_info(matrix=m_ks, nfullrows_total=nao)
-      CALL dbcsr_get_info(matrix=m_s, nfullrows_total=nao)
-      CALL dbcsr_get_info(matrix=m_t, nfullrows_total=nao)
 
       CALL dbcsr_create(m_tmp_no_1, &
                         template=m_quench_t, &
@@ -5043,42 +5026,8 @@ CONTAINS
                         matrix_type=dbcsr_type_no_symmetry)
 
       ! do d_E/d_T first
-      !IF (.NOT.PRESENT(m_FTsiginv)) THEN
-      !   CALL dbcsr_multiply("N","N",1.0_dp,&
-      !           m_ks,&
-      !           m_t,&
-      !           0.0_dp,m_tmp_no_1,&
-      !           filter_eps=eps_filter)
-      !   CALL dbcsr_multiply("N","N",1.0_dp,&
-      !           m_tmp_no_1,&
-      !           m_siginv,&
-      !           0.0_dp,m_FTsiginv,&
-      !           filter_eps=eps_filter)
-      !ENDIF
-
       CALL dbcsr_copy(m_tmp_no_2, m_quench_t)
       CALL dbcsr_copy(m_tmp_no_2, m_FTsiginv, keep_sparsity=.TRUE.)
-
-      !IF (.NOT.PRESENT(m_siginvTFTsiginv)) THEN
-      !   CALL dbcsr_multiply("T","N",1.0_dp,&
-      !           m_t,&
-      !           m_FTsiginv,&
-      !           0.0_dp,m_tmp_oo_1,&
-      !           filter_eps=eps_filter)
-      !   CALL dbcsr_multiply("N","N",1.0_dp,&
-      !           m_siginv,&
-      !           m_tmp_oo_1,&
-      !           0.0_dp,m_siginvTFTsiginv,&
-      !           filter_eps=eps_filter)
-      !ENDIF
-
-      !IF (.NOT.PRESENT(m_ST)) THEN
-      !   CALL dbcsr_multiply("N","N",1.0_dp,&
-      !           m_s,&
-      !           m_t,&
-      !           0.0_dp,m_ST,&
-      !           filter_eps=eps_filter)
-      !ENDIF
 
       CALL dbcsr_multiply("N", "N", -1.0_dp, &
                           m_ST, &
@@ -5088,6 +5037,7 @@ CONTAINS
       CALL dbcsr_scale(m_tmp_no_2, 2.0_dp*spin_factor)
 
       ! LzL Add gradient for Localization
+      ! RZK-WARNING: prefactor does not seem to be correct
       IF (my_penalty_local) THEN
 
          CALL dbcsr_set(temp2, 0.0_dp) ! accumulate the localization gradient here
@@ -5141,45 +5091,42 @@ CONTAINS
          CALL dbcsr_add(m_tmp_no_2, temp2, my_energy_coeff, my_localiz_coeff*4.0_dp)
       ENDIF
 
-      ! add penalty on the occupied volume: det(sigma)
-      IF (penalty_occ_vol) THEN
-         !RZK-warning CALL dbcsr_multiply("N","N",&
-         !RZK-warning         penalty_occ_vol_prefactor,&
-         !RZK-warning         m_ST,&
-         !RZK-warning         m_siginv,&
-         !RZK-warning         1.0_dp,m_tmp_no_2,&
-         !RZK-warning         retain_sparsity=.TRUE.,&
-         !RZK-warning         )
+      ! add the orthogonalization penalty based on det(sigma)
+      IF (do_orthogonalization_penalty) THEN
          CALL dbcsr_copy(m_tmp_no_1, m_quench_t)
          CALL dbcsr_multiply("N", "N", &
-                             penalty_occ_vol_prefactor, &
+                             orthogonalization_penalty_prefactor, &
                              m_ST, &
                              m_siginv, &
                              0.0_dp, m_tmp_no_1, &
                              retain_sparsity=.TRUE.)
-         ! this norm does not contain the normalization factors
-         CALL dbcsr_norm(m_tmp_no_1, dbcsr_norm_maxabsnorm, &
-                         norm_scalar=penalty_occ_vol_g_norm)
-         CALL dbcsr_norm(m_tmp_no_2, dbcsr_norm_maxabsnorm, &
-                         norm_scalar=energy_g_norm)
-         !WRITE (*, "(A30,2F20.10)") "Energy/penalty g norms (no norm): ", energy_g_norm, penalty_occ_vol_g_norm
          CALL dbcsr_add(m_tmp_no_2, m_tmp_no_1, 1.0_dp, 1.0_dp)
+         CALL dbcsr_copy(m_tmp_no_1, m_quench_t)
+         CALL dbcsr_multiply("N", "N", &
+                             orthogonalization_penalty_prefactor, &
+                             m_ST, &
+                             m_sig_diag_inv, &
+                             0.0_dp, m_tmp_no_1, &
+                             retain_sparsity=.TRUE.)
+         CALL dbcsr_add(m_tmp_no_2, m_tmp_no_1, 1.0_dp, -1.0_dp)
       ENDIF
 
       ! take into account the factor from the normalization constraint
+      normalize_orbitals = .FALSE.
       IF (normalize_orbitals) THEN
 
+         CPABORT("Orbital normalization might be inferior to generalized penalty")
          ! G = ( G - ST.[tr(T).G]_ii ) . [sig_sqrti]_ii
          ! this expression can be simplified to
          ! G = ( G - c0*ST ) . [sig_sqrti]_ii
-         ! where c0 = penalty_occ_vol_prefactor
+         ! where c0 = orthogonalization_penalty_prefactor
          ! This is because tr(T).G_Energy = 0 and
          !                 tr(T).G_Penalty = c0*I
 
          !! faster way to take the norm into account (tested for vol penalty olny)
          !!CALL dbcsr_copy(m_tmp_no_1, m_quench_t)
          !!CALL dbcsr_copy(m_tmp_no_1, m_ST, keep_sparsity=.TRUE.)
-         !!CALL dbcsr_add(m_tmp_no_2, m_tmp_no_1, 1.0_dp, -penalty_occ_vol_prefactor)
+         !!CALL dbcsr_add(m_tmp_no_2, m_tmp_no_1, 1.0_dp, -orthogonalization_penalty_prefactor)
          !!CALL dbcsr_copy(m_tmp_no_1, m_quench_t)
          !!CALL dbcsr_multiply("N", "N", 1.0_dp, &
          !!                    m_tmp_no_2, &
@@ -5475,12 +5422,12 @@ CONTAINS
                                            domain_s_inv, domain_map, cpu_of_domain, assume_t0_q0x, just_started, &
                                            optimize_theta, normalize_orbitals, envelope_amplitude, eps_filter, &
                                            special_case, nocc_of_domain, order_lanczos, eps_lanczos, max_iter_lanczos)
-
+!RZK-penalty: if sqrti_ii is not required, clean it up thoroughtly
       TYPE(dbcsr_type), INTENT(IN)                       :: m_var_in
       TYPE(dbcsr_type), INTENT(INOUT)                    :: m_t_out
       TYPE(dbcsr_type), INTENT(IN)                       :: m_quench_t, m_t0, m_oo_template, &
                                                             m_STsiginv0, m_s
-      TYPE(dbcsr_type), INTENT(INOUT)                    :: m_sig_sqrti_ii_out
+      TYPE(dbcsr_type), INTENT(INOUT), OPTIONAL          :: m_sig_sqrti_ii_out
       TYPE(domain_submatrix_type), DIMENSION(:), &
          INTENT(IN)                                      :: domain_r_down, domain_s_inv
       TYPE(domain_map_type), INTENT(IN)                  :: domain_map
@@ -5627,8 +5574,8 @@ CONTAINS
 !> \param cpu_of_domain ...
 !> \param domain_map ...
 !> \param assume_t0_q0x ...
-!> \param penalty_occ_vol ...
-!> \param penalty_occ_vol_prefactor ...
+!> \param do_orthogonalization_penalty ...
+!> \param orthogonalization_penalty_prefactor ...
 !> \param eps_filter ...
 !> \param neg_thr ...
 !> \param spin_factor ...
@@ -5641,18 +5588,19 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE compute_preconditioner(domain_prec_out, m_prec_out, m_ks, m_s, &
                                      m_siginv, m_quench_t, m_FTsiginv, m_siginvTFTsiginv, m_ST, &
-                                     m_STsiginv_out, m_s_vv_out, m_f_vv_out, para_env, &
-                                     blacs_env, nocc_of_domain, domain_s_inv, domain_s_inv_half, domain_s_half, &
+                                     m_STsiginv_out, m_s_vv_out, m_f_vv_out, m_sig_diag_inv, &
+                                     para_env, blacs_env, nocc_of_domain, domain_s_inv, domain_s_inv_half, domain_s_half, &
                                      domain_r_down, cpu_of_domain, &
-                                     domain_map, assume_t0_q0x, penalty_occ_vol, penalty_occ_vol_prefactor, &
+                                     domain_map, assume_t0_q0x, &
                                      eps_filter, neg_thr, spin_factor, special_case, bad_modes_projector_down_out, &
-                                     skip_inversion)
+                                     skip_inversion, do_orthogonalization_penalty, orthogonalization_penalty_prefactor)
 
       TYPE(domain_submatrix_type), DIMENSION(:), &
          INTENT(INOUT)                                   :: domain_prec_out
       TYPE(dbcsr_type), INTENT(INOUT)                    :: m_prec_out, m_ks, m_s
       TYPE(dbcsr_type), INTENT(IN)                       :: m_siginv, m_quench_t, m_FTsiginv, &
                                                             m_siginvTFTsiginv, m_ST
+      TYPE(dbcsr_type), INTENT(IN)                       :: m_sig_diag_inv
       TYPE(dbcsr_type), INTENT(INOUT), OPTIONAL          :: m_STsiginv_out, m_s_vv_out, m_f_vv_out
       TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
@@ -5665,8 +5613,9 @@ CONTAINS
          INTENT(IN)                                      :: domain_r_down
       INTEGER, DIMENSION(:), INTENT(IN)                  :: cpu_of_domain
       TYPE(domain_map_type), INTENT(IN)                  :: domain_map
-      LOGICAL, INTENT(IN)                                :: assume_t0_q0x, penalty_occ_vol
-      REAL(KIND=dp), INTENT(IN)                          :: penalty_occ_vol_prefactor, eps_filter, &
+      LOGICAL, INTENT(IN)                                :: assume_t0_q0x, do_orthogonalization_penalty
+      REAL(KIND=dp), INTENT(IN)                          :: orthogonalization_penalty_prefactor, &
+                                                            eps_filter, &
                                                             neg_thr, spin_factor
       INTEGER, INTENT(IN)                                :: special_case
       TYPE(domain_submatrix_type), DIMENSION(:), &
@@ -5677,7 +5626,7 @@ CONTAINS
          routineP = moduleN//':'//routineN
 
       INTEGER                                            :: handle, precond_domain_projector
-      TYPE(dbcsr_type)                                   :: m_tmp_nn_1, m_tmp_no_3
+      TYPE(dbcsr_type)                                   :: m_tmp_nn_1, m_tmp_no_3, m_tmp_oo_1
 
       CALL timeset(routineN, handle)
 
@@ -5700,11 +5649,11 @@ CONTAINS
                           m_siginv, &
                           0.0_dp, m_tmp_no_3, &
                           filter_eps=eps_filter)
-      CALL dbcsr_desymmetrize(m_s, m_tmp_nn_1)
       ! return STsiginv if necessary
       IF (PRESENT(m_STsiginv_out)) THEN
          CALL dbcsr_copy(m_STsiginv_out, m_tmp_no_3)
       ENDIF
+      CALL dbcsr_desymmetrize(m_s, m_tmp_nn_1)
       IF (special_case .EQ. xalmo_case_fully_deloc) THEN
          ! use S instead of S-SRS
       ELSE
@@ -5748,27 +5697,31 @@ CONTAINS
          CALL dbcsr_copy(m_f_vv_out, m_prec_out)
       ENDIF
 
-#if 0
-!penalty_only=.TRUE.
-      WRITE (unit_nr, *) "prefactor0:", penalty_occ_vol_prefactor
-      !IF (penalty_occ_vol) THEN
-      CALL dbcsr_desymmetrize(m_s, &
-                              m_prec_out)
-      !CALL dbcsr_scale(m_prec_out,-penalty_occ_vol_prefactor)
-      !ENDIF
-#else
       ! sum up the F_vv and S_vv terms
+      ! scale to obtain unit step length
       CALL dbcsr_add(m_prec_out, m_tmp_nn_1, &
-                     1.0_dp, 1.0_dp)
-      ! Scale to obtain unit step length
-      CALL dbcsr_scale(m_prec_out, 2.0_dp*spin_factor)
+                     2.0_dp*spin_factor, 2.0_dp*spin_factor)
 
       ! add the contribution from the penalty on the occupied volume
-      IF (penalty_occ_vol) THEN
+      IF (do_orthogonalization_penalty) THEN
+         CALL dbcsr_create(m_tmp_oo_1, template=m_siginv)
+         ! compute prefactor*S.T^t.(sig_diag_inv-sig_inv).S.T
+         CALL dbcsr_copy(m_tmp_oo_1, m_sig_diag_inv)
+         CALL dbcsr_add(m_tmp_oo_1, m_siginv, 1.0_dp, -1.0_dp)
+         CALL dbcsr_multiply("N", "N", 1.0_dp, &
+                             m_ST, &
+                             m_tmp_oo_1, &
+                             0.0_dp, m_tmp_no_3, &
+                             filter_eps=eps_filter)
+         CALL dbcsr_multiply("N", "T", -1.0_dp, &
+                             m_ST, &
+                             m_tmp_no_3, &
+                             0.0_dp, m_tmp_nn_1, &
+                             filter_eps=eps_filter)
          CALL dbcsr_add(m_prec_out, m_tmp_nn_1, &
-                        1.0_dp, penalty_occ_vol_prefactor)
+                        1.0_dp, orthogonalization_penalty_prefactor)
+         CALL dbcsr_release(m_tmp_oo_1)
       ENDIF
-#endif
 
       CALL dbcsr_copy(m_tmp_nn_1, m_prec_out)
 
@@ -5851,67 +5804,6 @@ CONTAINS
          ENDIF
 
       ENDIF ! special_case
-
-      ! invert using cholesky (works with S matrix, will not work with S-SRS matrix)
-      !!!CALL cp_dbcsr_cholesky_decompose(prec_vv,&
-      !!!        para_env=almo_scf_env%para_env,&
-      !!!        blacs_env=almo_scf_env%blacs_env)
-      !!!CALL cp_dbcsr_cholesky_invert(prec_vv,&
-      !!!        para_env=almo_scf_env%para_env,&
-      !!!        blacs_env=almo_scf_env%blacs_env,&
-      !!!        upper_to_full=.TRUE.)
-      !!!CALL dbcsr_filter(prec_vv,&
-      !!!        eps=almo_scf_env%eps_filter)
-      !!!
-
-      ! re-create the matrix because desymmetrize is buggy -
-      ! it will create multiple copies of blocks
-      !!!DESYM!CALL dbcsr_create(prec_vv,&
-      !!!DESYM!        template=almo_scf_env%matrix_s(1),&
-      !!!DESYM!        matrix_type=dbcsr_type_no_symmetry)
-      !!!DESYM!CALL dbcsr_desymmetrize(almo_scf_env%matrix_s(1),&
-      !!!DESYM!        prec_vv)
-      !CALL dbcsr_multiply("N","N",1.0_dp,&
-      !        almo_scf_env%matrix_s(1),&
-      !        matrix_t_out(ispin),&
-      !        0.0_dp,m_tmp_no_1,&
-      !        filter_eps=almo_scf_env%eps_filter)
-      !CALL dbcsr_multiply("N","N",1.0_dp,&
-      !        m_tmp_no_1,&
-      !        almo_scf_env%matrix_sigma_inv(ispin),&
-      !        0.0_dp,m_tmp_no_3,&
-      !        filter_eps=almo_scf_env%eps_filter)
-      !CALL dbcsr_multiply("N","T",-1.0_dp,&
-      !        m_tmp_no_3,&
-      !        m_tmp_no_1,&
-      !        1.0_dp,prec_vv,&
-      !        filter_eps=almo_scf_env%eps_filter)
-      !CALL dbcsr_add_on_diag(prec_vv,&
-      !        prec_sf_mixing_s)
-
-      !CALL dbcsr_create(prec_oo,&
-      !        template=almo_scf_env%matrix_sigma(ispin),&
-      !        matrix_type=dbcsr_type_no_symmetry)
-      !CALL dbcsr_desymmetrize(almo_scf_env%matrix_sigma(ispin),&
-      !        matrix_type=dbcsr_type_no_symmetry)
-      !CALL dbcsr_desymmetrize(almo_scf_env%matrix_sigma(ispin),&
-      !        prec_oo)
-      !CALL dbcsr_filter(prec_oo,&
-      !        eps=almo_scf_env%eps_filter)
-
-      !! invert using cholesky
-      !CALL dbcsr_create(prec_oo_inv,&
-      !        template=prec_oo,&
-      !        matrix_type=dbcsr_type_no_symmetry)
-      !CALL dbcsr_desymmetrize(prec_oo,&
-      !        prec_oo_inv)
-      !CALL cp_dbcsr_cholesky_decompose(prec_oo_inv,&
-      !        para_env=almo_scf_env%para_env,&
-      !        blacs_env=almo_scf_env%blacs_env)
-      !CALL cp_dbcsr_cholesky_invert(prec_oo_inv,&
-      !        para_env=almo_scf_env%para_env,&
-      !        blacs_env=almo_scf_env%blacs_env,&
-      !        upper_to_full=.TRUE.)
 
       CALL dbcsr_release(m_tmp_nn_1)
       CALL dbcsr_release(m_tmp_no_3)
@@ -6111,7 +6003,6 @@ CONTAINS
 !> \param penalty_occ_vol ...
 !> \param normalize_orbitals ...
 !> \param penalty_occ_vol_prefactor ...
-!> \param penalty_occ_vol_pf2 ...
 !> \param special_case ...
 !> \par History
 !>       2015.04 created [Rustam Z. Khaliullin]
@@ -6119,16 +6010,19 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE newton_grad_to_step(optimizer, m_grad, m_delta, m_s, m_ks, &
                                   m_siginv, m_quench_t, m_FTsiginv, m_siginvTFTsiginv, m_ST, m_t, &
-                                  m_sig_sqrti_ii, domain_s_inv, domain_r_down, domain_map, cpu_of_domain, &
+                                  m_sig_sqrti_ii, m_sig_diag_inv, domain_s_inv, domain_r_down, &
+                                  domain_map, cpu_of_domain, &
                                   nocc_of_domain, para_env, blacs_env, eps_filter, optimize_theta, &
                                   penalty_occ_vol, normalize_orbitals, penalty_occ_vol_prefactor, &
-                                  penalty_occ_vol_pf2, special_case)
+                                  special_case)
 
       TYPE(optimizer_options_type), INTENT(IN)           :: optimizer
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_grad
       TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_delta, m_s, m_ks, m_siginv, m_quench_t
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_FTsiginv, m_siginvTFTsiginv, m_ST, &
-                                                            m_t, m_sig_sqrti_ii
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_FTsiginv, m_siginvTFTsiginv, m_ST, m_t
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), OPTIONAL &
+                                                         :: m_sig_sqrti_ii
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_sig_diag_inv
       TYPE(domain_submatrix_type), DIMENSION(:, :), &
          INTENT(IN)                                      :: domain_s_inv, domain_r_down
       TYPE(domain_map_type), DIMENSION(:), INTENT(IN)    :: domain_map
@@ -6139,8 +6033,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: eps_filter
       LOGICAL, INTENT(IN)                                :: optimize_theta, penalty_occ_vol, &
                                                             normalize_orbitals
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: penalty_occ_vol_prefactor, &
-                                                            penalty_occ_vol_pf2
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: penalty_occ_vol_prefactor
       INTEGER, INTENT(IN)                                :: special_case
 
       CHARACTER(len=*), PARAMETER :: routineN = 'newton_grad_to_step', &
@@ -6280,6 +6173,7 @@ CONTAINS
             m_STsiginv_out=m_STsiginv(ispin), &
             m_s_vv_out=m_s_vv(ispin), &
             m_f_vv_out=m_f_vv(ispin), &
+            m_sig_diag_inv=m_sig_diag_inv(ispin), &
             para_env=para_env, &
             blacs_env=blacs_env, &
             nocc_of_domain=nocc_of_domain(:, ispin), &
@@ -6288,8 +6182,8 @@ CONTAINS
             cpu_of_domain=cpu_of_domain(:), &
             domain_map=domain_map(ispin), &
             assume_t0_q0x=.FALSE., &
-            penalty_occ_vol=penalty_occ_vol, &
-            penalty_occ_vol_prefactor=penalty_occ_vol_prefactor(ispin), &
+            do_orthogonalization_penalty=penalty_occ_vol, &
+            orthogonalization_penalty_prefactor=penalty_occ_vol_prefactor(ispin), &
             eps_filter=eps_filter, &
             neg_thr=0.5_dp, &
             spin_factor=spin_factor, &
@@ -6331,7 +6225,6 @@ CONTAINS
                eps_zero=eps_filter*10.0_dp, &
                penalty_occ_vol=penalty_occ_vol, &
                penalty_occ_vol_prefactor=penalty_occ_vol_prefactor(ispin), &
-               penalty_occ_vol_pf2=penalty_occ_vol_pf2(ispin), &
                m_s=m_s(1), &
                para_env=para_env, &
                blacs_env=blacs_env &
@@ -6547,26 +6440,6 @@ CONTAINS
          IF (outer_prepare_to_exit) EXIT
 
       ENDDO ! outer loop
-
-! is not necessary if penalty_occ_vol_pf2=0.0
-#if 0
-
-      IF (penalty_occ_vol) THEN
-
-         DO ispin = 1, nspins
-
-            CALL dbcsr_copy(m_zet(ispin), m_grad(ispin))
-            CALL dbcsr_dot(m_delta(ispin), m_zet(ispin), alpha)
-            WRITE (unit_nr, *) "trace(grad.delta): ", alpha
-            alpha = -1.0_dp/(penalty_occ_vol_pf2(ispin)*alpha - 1.0_dp)
-            WRITE (unit_nr, *) "correction alpha: ", alpha
-            CALL dbcsr_scale(m_delta(ispin), alpha)
-
-         ENDDO
-
-      ENDIF
-
-#endif
 
       DO ispin = 1, nspins
 
@@ -6976,7 +6849,6 @@ CONTAINS
 !> \param quench_t ...
 !> \param penalty_occ_vol ...
 !> \param penalty_occ_vol_prefactor ...
-!> \param penalty_occ_vol_pf2 ...
 !> \param spin_factor ...
 !> \param eps_zero ...
 !> \param m_s ...
@@ -6988,7 +6860,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE hessian_diag_apply(matrix_grad, matrix_step, matrix_S_ao, &
                                  matrix_F_ao, matrix_S_mo, matrix_F_mo, matrix_S_vo, matrix_F_vo, quench_t, &
-                                 penalty_occ_vol, penalty_occ_vol_prefactor, penalty_occ_vol_pf2, &
+                                 penalty_occ_vol, penalty_occ_vol_prefactor, &
                                  spin_factor, eps_zero, m_s, para_env, blacs_env)
 
       TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_grad, matrix_step, matrix_S_ao, &
@@ -6997,7 +6869,7 @@ CONTAINS
       TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_S_vo, matrix_F_vo, quench_t
       LOGICAL, INTENT(IN)                                :: penalty_occ_vol
       REAL(KIND=dp), INTENT(IN)                          :: penalty_occ_vol_prefactor, &
-                                                            penalty_occ_vol_pf2, spin_factor, &
+                                                            spin_factor, &
                                                             eps_zero
       TYPE(dbcsr_type), INTENT(IN)                       :: m_s
       TYPE(cp_para_env_type), POINTER                    :: para_env
@@ -7091,7 +6963,6 @@ CONTAINS
       ENDIF
 
       WRITE (unit_nr, *) "penalty_prefactor_local: ", penalty_prefactor_local
-      WRITE (unit_nr, *) "penalty_prefactor_2: ", penalty_occ_vol_pf2
 
       !CALL dbcsr_print(matrix_grad)
       !CALL dbcsr_print(matrix_F_ao_sym)
@@ -7756,21 +7627,20 @@ CONTAINS
       INTEGER :: handle, ispin, iteration, iteration_type_to_report, my_special_case, ndomains, &
          nspins, outer_iteration, prec_type, unit_nr
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: nocc
-      LOGICAL :: assume_t0_q0x, border_reached, inner_loop_success, normalize_orbitals, &
+      LOGICAL :: assume_t0_q0x, border_reached, inner_loop_success, &
          optimize_theta, penalty_occ_vol, reset_conjugator, same_position, scf_converged
       REAL(kind=dp) :: beta, energy_start, energy_trial, eta, expected_reduction, &
          fake_step_size_to_report, grad_norm_ratio, grad_norm_ref, loss_change_to_report, &
-         loss_start, loss_trial, model_grad_norm, penalty_amplitude, penalty_start, penalty_trial, &
+         loss_start, loss_trial, model_grad_norm, penalty_start, penalty_trial, &
          radius_current, radius_max, real_temp, rho, spin_factor, step_norm, step_size, t1, &
-         t1outer, t2, t2outer, y_scalar
+         t1outer, t2, t2outer, y_scalar, penalty_alpha
       REAL(kind=dp), ALLOCATABLE, DIMENSION(:)           :: grad_norm_spin, &
-                                                            penalty_occ_vol_g_prefactor, &
-                                                            penalty_occ_vol_h_prefactor
+                                                            penalty_occ_vol_g_prefactor
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_type)                                   :: m_s_inv
       TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:) :: FTsiginv, grad, m_model_Bd, m_model_d, &
          m_model_hessian, m_model_hessian_inv, m_model_r, m_model_r_prev, m_model_rt, &
-         m_model_rt_prev, m_sig_sqrti_ii, m_theta, m_theta_trial, prev_step, siginvTFTsiginv, ST, &
+         m_model_rt_prev, m_sig_diag_inv, m_theta, m_theta_trial, prev_step, siginvTFTsiginv, ST, &
          step, STsiginv_0
       TYPE(domain_submatrix_type), ALLOCATABLE, &
          DIMENSION(:, :)                                 :: domain_model_hessian_inv, domain_r_down
@@ -7831,17 +7701,19 @@ CONTAINS
          WRITE (unit_nr, '(T2,A)') REPEAT("-", 79)
       ENDIF
 
-      ! penalty amplitude adjusts the strength of volume conservation
-RZK-PENALTY: flag to use the penalty
-      penalty_occ_vol = .FALSE.
-      !(almo_scf_env%penalty%occ_vol_method .NE. almo_occ_vol_penalty_none .AND. &
-      !                   my_special_case .EQ. xalmo_case_fully_deloc)
-      normalize_orbitals = penalty_occ_vol
-      penalty_amplitude = almo_scf_env%xalmo_penalty%penalty_strength
+      ! penalty amplitude adjusts the strength of orthogonalization
+      penalty_occ_vol = (almo_scf_env%xalmo_penalty%penalty_is_on .AND. &
+                         my_special_case .NE. xalmo_case_block_diag)
+      IF (unit_nr > 0) THEN
+         IF (penalty_occ_vol) THEN
+            WRITE(unit_nr, '(T2,A)') "Orthogonalization penalty is ON."
+         ELSE
+            WRITE(unit_nr, '(T2,A)') "Orthogonalization penalty is OFF."
+         ENDIF
+      ENDIF
+      penalty_alpha = almo_scf_env%xalmo_penalty%penalty_strength
       ALLOCATE (penalty_occ_vol_g_prefactor(nspins))
-      ALLOCATE (penalty_occ_vol_h_prefactor(nspins))
       penalty_occ_vol_g_prefactor(:) = 0.0_dp
-      penalty_occ_vol_h_prefactor(:) = 0.0_dp
 
       ! here preconditioner is the Hessian of model function
       prec_type = optimizer%preconditioner
@@ -7891,7 +7763,7 @@ RZK-PENALTY: flag to use the penalty
       ALLOCATE (grad(nspins))
       ALLOCATE (prev_step(nspins))
       ALLOCATE (step(nspins))
-      ALLOCATE (m_sig_sqrti_ii(nspins))
+      ALLOCATE (m_sig_diag_inv(nspins))
       ALLOCATE (m_model_r(nspins))
       ALLOCATE (m_model_rt(nspins))
       ALLOCATE (m_model_d(nspins))
@@ -7930,7 +7802,7 @@ RZK-PENALTY: flag to use the penalty
          CALL dbcsr_create(step(ispin), &
                            template=matrix_t_out(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
-         CALL dbcsr_create(m_sig_sqrti_ii(ispin), &
+         CALL dbcsr_create(m_sig_diag_inv(ispin), &
                            template=almo_scf_env%matrix_sigma_inv(ispin), &
                            matrix_type=dbcsr_type_no_symmetry)
          CALL dbcsr_create(m_model_r(ispin), &
@@ -8022,9 +7894,10 @@ RZK-PENALTY: flag to use the penalty
          qs_env=qs_env, &
          m_main_var_in=m_theta, &
          m_t_out=matrix_t_out, &
-         m_sig_sqrti_ii_out=m_sig_sqrti_ii, &
          energy_out=energy_start, &
          penalty_out=penalty_start, &
+         !m_sig_sqrti_ii_out=m_sig_sqrti_ii, &
+         m_sig_diag_inv_out=m_sig_diag_inv, &
          m_FTsiginv_out=FTsiginv, &
          m_siginvTFTsiginv_out=siginvTFTsiginv, &
          m_ST_out=ST, &
@@ -8034,7 +7907,6 @@ RZK-PENALTY: flag to use the penalty
          assume_t0_q0x=assume_t0_q0x, &
          just_started=.TRUE., &
          optimize_theta=optimize_theta, &
-         normalize_orbitals=normalize_orbitals, &
          perturbation_only=perturbation_only, &
          do_penalty=penalty_occ_vol, &
          special_case=my_special_case)
@@ -8044,11 +7916,8 @@ RZK-PENALTY: flag to use the penalty
       ENDIF
       DO ispin = 1, nspins
          IF (penalty_occ_vol) THEN
-RZK-PENALTY: re-think the meaning of the penalty amplitude and extensivity
-Is it necessary to carry around the g_ h_ prefactors?
             penalty_occ_vol_g_prefactor(ispin) = &
-               -2.0_dp*penalty_amplitude*spin_factor*nocc(ispin)
-            penalty_occ_vol_h_prefactor(ispin) = 0.0_dp
+               -2.0_dp*penalty_alpha*spin_factor*nocc(ispin)
          ENDIF
       ENDDO ! ispin
 
@@ -8071,8 +7940,6 @@ Is it necessary to carry around the g_ h_ prefactors?
                IF (unit_nr > 0 .AND. debug_mode) WRITE (unit_nr, *) "...Compute model gradient"
                CALL compute_gradient( &
                   m_grad_out=grad(ispin), &
-                  m_ks=almo_scf_env%matrix_ks(ispin), &
-                  m_s=almo_scf_env%matrix_s(1), &
                   m_t=matrix_t_out(ispin), &
                   m_t0=almo_scf_env%matrix_t_blk(ispin), &
                   m_siginv=almo_scf_env%matrix_sigma_inv(ispin), &
@@ -8082,16 +7949,15 @@ Is it necessary to carry around the g_ h_ prefactors?
                   m_ST=ST(ispin), &
                   m_STsiginv0=STsiginv_0(ispin), &
                   m_theta=m_theta(ispin), &
-                  m_sig_sqrti_ii=m_sig_sqrti_ii(ispin), &
+                  m_sig_diag_inv=m_sig_diag_inv(ispin), &
                   domain_s_inv=almo_scf_env%domain_s_inv(:, ispin), &
                   domain_r_down=domain_r_down(:, ispin), &
                   cpu_of_domain=almo_scf_env%cpu_of_domain, &
                   domain_map=almo_scf_env%domain_map(ispin), &
                   assume_t0_q0x=assume_t0_q0x, &
                   optimize_theta=optimize_theta, &
-                  normalize_orbitals=normalize_orbitals, &
-                  penalty_occ_vol=penalty_occ_vol, &
-                  penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin), &
+                  do_orthogonalization_penalty=penalty_occ_vol, &
+                  orthogonalization_penalty_prefactor=penalty_occ_vol_g_prefactor(ispin), &
                   envelope_amplitude=almo_scf_env%envelope_amplitude, &
                   eps_filter=almo_scf_env%eps_filter, &
                   spin_factor=spin_factor, &
@@ -8188,6 +8054,7 @@ Is it necessary to carry around the g_ h_ prefactors?
                      m_FTsiginv=FTsiginv(ispin), &
                      m_siginvTFTsiginv=siginvTFTsiginv(ispin), &
                      m_ST=ST(ispin), &
+                     m_sig_diag_inv=m_sig_diag_inv(ispin), &
                      para_env=almo_scf_env%para_env, &
                      blacs_env=almo_scf_env%blacs_env, &
                      nocc_of_domain=almo_scf_env%nocc_of_domain(:, ispin), &
@@ -8196,13 +8063,13 @@ Is it necessary to carry around the g_ h_ prefactors?
                      cpu_of_domain=almo_scf_env%cpu_of_domain, &
                      domain_map=almo_scf_env%domain_map(ispin), &
                      assume_t0_q0x=.FALSE., &
-                     penalty_occ_vol=penalty_occ_vol, &
-                     penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin), &
                      eps_filter=almo_scf_env%eps_filter, &
-                     neg_thr=0.5_dp, &
+                     neg_thr=0.5_dp, & ! RZK-warning: this arbitrary constant must not affect the results here
                      spin_factor=spin_factor, &
+                     special_case=my_special_case, &
                      skip_inversion=.TRUE., &
-                     special_case=my_special_case)
+                     do_orthogonalization_penalty=penalty_occ_vol, &
+                     orthogonalization_penalty_prefactor=penalty_occ_vol_g_prefactor(ispin))
                ENDDO ! ispin
 
             CASE DEFAULT
@@ -8486,35 +8353,6 @@ Is it necessary to carry around the g_ h_ prefactors?
 
                   ENDIF ! special_case
 
-                  ! slower but more reliable way to get inverted hessian
-                  !DO ispin = 1, nspins
-                  !   CALL compute_preconditioner( &
-                  !      domain_prec_out=domain_model_hessian_inv(:, ispin), &
-                  !      m_prec_out=m_model_hessian_inv(ispin), & ! RZK-warning: this one is not inverted if DOMAINs
-                  !      m_ks=almo_scf_env%matrix_ks(ispin), &
-                  !      m_s=almo_scf_env%matrix_s(1), &
-                  !      m_siginv=almo_scf_env%matrix_sigma_inv(ispin), &
-                  !      m_quench_t=quench_t(ispin), &
-                  !      m_FTsiginv=FTsiginv(ispin), &
-                  !      m_siginvTFTsiginv=siginvTFTsiginv(ispin), &
-                  !      m_ST=ST(ispin), &
-                  !      para_env=almo_scf_env%para_env, &
-                  !      blacs_env=almo_scf_env%blacs_env, &
-                  !      nocc_of_domain=almo_scf_env%nocc_of_domain(:, ispin), &
-                  !      domain_s_inv=almo_scf_env%domain_s_inv(:, ispin), &
-                  !      domain_r_down=domain_r_down(:, ispin), &
-                  !      cpu_of_domain=almo_scf_env%cpu_of_domain, &
-                  !      domain_map=almo_scf_env%domain_map(ispin), &
-                  !      assume_t0_q0x=.FALSE., &
-                  !      penalty_occ_vol=penalty_occ_vol, &
-                  !      penalty_occ_vol_prefactor=penalty_occ_vol_g_prefactor(ispin), &
-                  !      eps_filter=almo_scf_env%eps_filter, &
-                  !      neg_thr=1.0E10_dp, &
-                  !      spin_factor=spin_factor, &
-                  !      skip_inversion=.FALSE., &
-                  !      special_case=my_special_case)
-                  !ENDDO ! ispin
-
                CASE DEFAULT
 
                   CPABORT("Unknown preconditioner")
@@ -8785,9 +8623,10 @@ Is it necessary to carry around the g_ h_ prefactors?
             qs_env=qs_env, &
             m_main_var_in=m_theta_trial, &
             m_t_out=matrix_t_out, &
-            m_sig_sqrti_ii_out=m_sig_sqrti_ii, &
             energy_out=energy_trial, &
             penalty_out=penalty_trial, &
+            !m_sig_sqrti_ii_out=m_sig_sqrti_ii, &
+            m_sig_diag_inv_out=m_sig_diag_inv, &
             m_FTsiginv_out=FTsiginv, &
             m_siginvTFTsiginv_out=siginvTFTsiginv, &
             m_ST_out=ST, &
@@ -8797,7 +8636,6 @@ Is it necessary to carry around the g_ h_ prefactors?
             assume_t0_q0x=assume_t0_q0x, &
             just_started=.FALSE., &
             optimize_theta=optimize_theta, &
-            normalize_orbitals=normalize_orbitals, &
             perturbation_only=perturbation_only, &
             do_penalty=penalty_occ_vol, &
             special_case=my_special_case)
@@ -8873,7 +8711,7 @@ Is it necessary to carry around the g_ h_ prefactors?
          CALL dbcsr_release(grad(ispin))
          CALL dbcsr_release(step(ispin))
          CALL dbcsr_release(m_theta(ispin))
-         CALL dbcsr_release(m_sig_sqrti_ii(ispin))
+         CALL dbcsr_release(m_sig_diag_inv(ispin))
          CALL dbcsr_release(m_model_r(ispin))
          CALL dbcsr_release(m_model_rt(ispin))
          CALL dbcsr_release(m_model_d(ispin))
@@ -8894,7 +8732,7 @@ Is it necessary to carry around the g_ h_ prefactors?
       DEALLOCATE (grad)
       DEALLOCATE (prev_step)
       DEALLOCATE (step)
-      DEALLOCATE (m_sig_sqrti_ii)
+      DEALLOCATE (m_sig_diag_inv)
       DEALLOCATE (m_model_r)
       DEALLOCATE (m_model_rt)
       DEALLOCATE (m_model_d)
@@ -8907,7 +8745,6 @@ Is it necessary to carry around the g_ h_ prefactors?
       DEALLOCATE (domain_model_hessian_inv)
 
       DEALLOCATE (penalty_occ_vol_g_prefactor)
-      DEALLOCATE (penalty_occ_vol_h_prefactor)
       DEALLOCATE (grad_norm_spin)
       DEALLOCATE (nocc)
 
@@ -8933,6 +8770,7 @@ Is it necessary to carry around the g_ h_ prefactors?
 !> \param energy_out ...
 !> \param penalty_out ...
 !> \param m_sig_sqrti_ii_out ...
+!> \param m_sig_diag_inv_out ...
 !> \param m_FTsiginv_out ...
 !> \param m_siginvTFTsiginv_out ...
 !> \param m_ST_out ...
@@ -8942,7 +8780,6 @@ Is it necessary to carry around the g_ h_ prefactors?
 !> \param assume_t0_q0x ...
 !> \param just_started ...
 !> \param optimize_theta ...
-!> \param normalize_orbitals ...
 !> \param perturbation_only ...
 !> \param do_penalty ...
 !> \param special_case ...
@@ -8951,9 +8788,11 @@ Is it necessary to carry around the g_ h_ prefactors?
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
    SUBROUTINE main_var_to_xalmos_and_loss_func(almo_scf_env, qs_env, m_main_var_in, &
-                                               m_t_out, energy_out, penalty_out, m_sig_sqrti_ii_out, m_FTsiginv_out, &
-                                               m_siginvTFTsiginv_out, m_ST_out, m_STsiginv0_in, m_quench_t_in, domain_r_down_in, &
-                                               assume_t0_q0x, just_started, optimize_theta, normalize_orbitals, perturbation_only, &
+                                               m_t_out, energy_out, penalty_out, &
+                                               m_sig_sqrti_ii_out, m_sig_diag_inv_out, m_FTsiginv_out, &
+                                               m_siginvTFTsiginv_out, m_ST_out, m_STsiginv0_in, &
+                                               m_quench_t_in, domain_r_down_in, &
+                                               assume_t0_q0x, just_started, optimize_theta, perturbation_only, &
                                                do_penalty, special_case)
 
       TYPE(almo_scf_env_type), INTENT(INOUT)             :: almo_scf_env
@@ -8961,25 +8800,37 @@ Is it necessary to carry around the g_ h_ prefactors?
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_main_var_in
       TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_t_out
       REAL(KIND=dp), INTENT(OUT)                         :: energy_out, penalty_out
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_sig_sqrti_ii_out, m_FTsiginv_out, &
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT), &
+         OPTIONAL                                        :: m_sig_sqrti_ii_out
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_sig_diag_inv_out, &
+                                                            m_FTsiginv_out, &
                                                             m_siginvTFTsiginv_out, m_ST_out
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: m_STsiginv0_in, m_quench_t_in
       TYPE(domain_submatrix_type), DIMENSION(:, :), &
          INTENT(IN)                                      :: domain_r_down_in
       LOGICAL, INTENT(IN)                                :: assume_t0_q0x, just_started, &
-                                                            optimize_theta, normalize_orbitals, &
+                                                            optimize_theta, &
                                                             perturbation_only, do_penalty
       INTEGER, INTENT(IN)                                :: special_case
 
       CHARACTER(len=*), PARAMETER :: routineN = 'main_var_to_xalmos_and_loss_func', &
          routineP = moduleN//':'//routineN
 
-      INTEGER                                            :: handle, ispin, nspins
+      INTEGER                                            :: handle, ispin, nspins, unit_nr
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: nocc
       REAL(KIND=dp)                                      :: det1, energy_ispin, penalty_amplitude, &
-                                                            spin_factor
+                                                            spin_factor, penalty_ispin, det2
+      TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
+
+      ! get a useful output_unit
+      logger => cp_get_default_logger()
+      IF (logger%para_env%ionode) THEN
+         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         unit_nr = -1
+      ENDIF
 
       energy_out = 0.0_dp
       penalty_out = 0.0_dp
@@ -8991,7 +8842,7 @@ Is it necessary to carry around the g_ h_ prefactors?
          spin_factor = 1.0_dp
       ENDIF
 
-      penalty_amplitude = 0.0_dp !almo_scf_env%penalty%occ_vol_coeff
+      penalty_amplitude = almo_scf_env%xalmo_penalty%penalty_strength
 
       ALLOCATE (nocc(nspins))
       DO ispin = 1, nspins
@@ -9010,7 +8861,8 @@ Is it necessary to carry around the g_ h_ prefactors?
             m_oo_template=almo_scf_env%matrix_sigma_inv(ispin), &
             m_STsiginv0=m_STsiginv0_in(ispin), &
             m_s=almo_scf_env%matrix_s(1), &
-            m_sig_sqrti_ii_out=m_sig_sqrti_ii_out(ispin), &
+            !m_sig_sqrti_ii_out=m_sig_sqrti_ii_out(ispin), &
+            !m_sig_diag_inv_out=m_sig_diag_inv_out(ispin), &
             domain_r_down=domain_r_down_in(:, ispin), &
             domain_s_inv=almo_scf_env%domain_s_inv(:, ispin), &
             domain_map=almo_scf_env%domain_map(ispin), &
@@ -9018,7 +8870,8 @@ Is it necessary to carry around the g_ h_ prefactors?
             assume_t0_q0x=assume_t0_q0x, &
             just_started=just_started, &
             optimize_theta=optimize_theta, &
-            normalize_orbitals=normalize_orbitals, &
+            !RZK-PENALTY: reverse normalize_orbitals=do_penalty, & ! normalize only if orthogonalization penalty is necessary
+            normalize_orbitals=.FALSE., & ! use the generalized penalty instead
             envelope_amplitude=almo_scf_env%envelope_amplitude, &
             eps_filter=almo_scf_env%eps_filter, &
             special_case=special_case, &
@@ -9093,10 +8946,19 @@ Is it necessary to carry around the g_ h_ prefactors?
 
          IF (do_penalty) THEN
 
-            CALL determinant(almo_scf_env%matrix_sigma(ispin), det1, &
-                             almo_scf_env%eps_filter)
-            penalty_out = penalty_out - &
-                          penalty_amplitude*spin_factor*nocc(ispin)*LOG(det1)
+            CALL sig_diag_inv_det(m_sigma_in=almo_scf_env%matrix_sigma(ispin), &
+                                  nocc_of_domain_in=almo_scf_env%nocc_of_domain(:, ispin), &
+                                  m_sig_diag_inv_out=m_sig_diag_inv_out(ispin), &
+                                  det_sigma_out=det1, &
+                                  det_sig_diag_inv_out=det2, &
+                                  eps_filter=almo_scf_env%eps_filter)
+            penalty_ispin = -penalty_amplitude*spin_factor*nocc(ispin)*LOG(det1*det2)
+            penalty_out = penalty_out + penalty_ispin
+
+            IF (unit_nr > 0) THEN
+               WRITE (unit_nr, '(T2,A5,I2,A25,F20.15,A11,F20.10)') &
+                  "Spin ", ispin, ". Normalized determinant", det1*det2, ", penalty", penalty_ispin
+            ENDIF
 
          ENDIF
 

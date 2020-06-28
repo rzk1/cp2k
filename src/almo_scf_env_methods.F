@@ -306,6 +306,9 @@ CONTAINS
       CALL section_vals_val_get(nlmo_opt_pcg_section, "PRECONDITIONER", &
                                 i_val=almo_scf_env%opt_nlmo_pcg%preconditioner)
 
+      ! Localization of NLMOs
+      CALL section_vals_val_get(penalty_section, "_SECTION_PARAMETERS_", &
+                                l_val=almo_scf_env%opt_nlmo_penalty%penalty_is_on)
       CALL section_vals_val_get(penalty_section, &
                                 "PENALTY_STRENGTH", &
                                 r_val=almo_scf_env%opt_nlmo_penalty%penalty_strength)
@@ -319,11 +322,10 @@ CONTAINS
                                 "FINAL_DETERMINANT", &
                                 r_val=almo_scf_env%opt_nlmo_penalty%final_determinant)
       almo_scf_env%opt_nlmo_penalty%penalty_strength = ABS(almo_scf_env%opt_nlmo_penalty%penalty_strength)
-      almo_scf_env%opt_nlmo_penalty%penalty_is_on=.FALSE.
-      IF ( ABS(almo_scf_env%opt_nlmo_penalty%penalty_strength) > TINY(1.0_dp) ) &
-         almo_scf_env%opt_nlmo_penalty%penalty_is_on=.TRUE.
 
       ! Penalty imposed on xalmo
+      CALL section_vals_val_get(xalmo_penalty_section, "_SECTION_PARAMETERS_", &
+                                l_val=almo_scf_env%xalmo_penalty%penalty_is_on)
       CALL section_vals_val_get(xalmo_penalty_section, &
                                 "PENALTY_STRENGTH", &
                                 r_val=almo_scf_env%xalmo_penalty%penalty_strength)
@@ -337,9 +339,6 @@ CONTAINS
                                 "FINAL_DETERMINANT", &
                                 r_val=almo_scf_env%xalmo_penalty%final_determinant)
       almo_scf_env%xalmo_penalty%penalty_strength = ABS(almo_scf_env%xalmo_penalty%penalty_strength)
-      almo_scf_env%xalmo_penalty%penalty_is_on=.FALSE.
-      IF ( ABS(almo_scf_env%xalmo_penalty%penalty_strength) > TINY(1.0_dp) ) &
-         almo_scf_env%xalmo_penalty%penalty_is_on=.TRUE.
 
       CALL section_vals_val_get(xalmo_opt_newton_pcg_section, "EPS_ERROR", &
                                 r_val=almo_scf_env%opt_xalmo_newton_pcg_solver%eps_error)
