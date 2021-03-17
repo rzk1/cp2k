@@ -1291,6 +1291,12 @@ CONTAINS
                ENDIF ! lsr .eq. 0
             ENDIF ! first step
          END SELECT
+
+         !IF (output_unit > 0) THEN
+         !   WRITE (output_unit, '(T5,I10,T18,I10,T31,2F20.6,F10.3)') line_searches, Iterations, Omega, tol, ds_min
+         !   CALL m_flush(output_unit)
+         !ENDIF
+
          ! now go to the suggested point
          ds_min = pos(line_search_count + 1)
          ds = pos(line_search_count + 1) - pos(line_search_count)

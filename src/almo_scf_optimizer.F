@@ -74,7 +74,7 @@ MODULE almo_scf_optimizer
                                               select_row
    USE input_constants,                 ONLY: &
         almo_scf_diag, almo_scf_dm_sign, cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, &
-        cg_hager_zhang, cg_hestenes_stiefel, cg_liu_storey, cg_polak_ribiere, cg_zero, &
+        cg_hager_zhang, cg_hestenes_stiefel, cg_liu_storey, cg_polak_ribiere, cg_zero, cg_bfgs_hybrid, &
         trustr_cauchy, trustr_dogleg, virt_full, xalmo_case_block_diag, xalmo_case_fully_deloc, &
         xalmo_case_normal, xalmo_prec_domain, xalmo_prec_full, xalmo_prec_identity
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
@@ -5936,11 +5936,11 @@ CONTAINS
 !>       2015.04 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
-   SUBROUTINE compute_cg_beta(beta, numer, denom, reset_conjugator, conjugator, &
+   SUBROUTINE compute_cg_beta(beta, numer, denom, l_index, reset_conjugator, conjugator, &
                               grad, prev_grad, step, prev_step, prev_minus_prec_grad)
 
       REAL(KIND=dp), INTENT(INOUT)                       :: beta
-      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: numer, denom
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: numer, denom, l_index
       LOGICAL, INTENT(INOUT)                             :: reset_conjugator
       INTEGER, INTENT(IN)                                :: conjugator
       TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: grad, prev_grad, step, prev_step
@@ -5979,7 +5979,8 @@ CONTAINS
       IF (PRESENT(numer) .OR. PRESENT(denom)) THEN
          IF (conjugator .EQ. cg_hestenes_stiefel .OR. &
              conjugator .EQ. cg_dai_yuan .OR. &
-             conjugator .EQ. cg_hager_zhang) THEN
+             conjugator .EQ. cg_hager_zhang .OR. &
+             conjugator .EQ. cg_bfgs_hybrid) THEN
             CPABORT("cannot return numer/denom")
          ENDIF
       ENDIF
@@ -6034,6 +6035,16 @@ CONTAINS
             CALL dbcsr_dot(prev_step(i), grad(i), num3)
             my_numer2 = my_numer2 + num2
             my_numer3 = my_numer3 + num3
+         CASE (cg_bfgs_hybrid)
+            CALL dbcsr_copy(m_tmp_no_1, grad(i))
+            CALL dbcsr_add(m_tmp_no_1, prev_grad(i), &
+                           1.0_dp, -1.0_dp)
+            CALL dbcsr_dot(m_tmp_no_1, grad(i), num)
+            CALL dbcsr_dot(prev_grad(i), prev_step(i), den)
+            CALL dbcsr_dot(grad(i), grad(i), num2)
+            CALL dbcsr_dot(grad(i), prev_step(i), num3)
+            my_numer2 = my_numer2 + num2
+            my_numer3 = my_numer3 + num3
          CASE (cg_zero)
             num = 0.0_dp
             den = 1.0_dp
@@ -6052,12 +6063,16 @@ CONTAINS
          SELECT CASE (conjugator)
          CASE (cg_hestenes_stiefel, cg_dai_yuan)
             beta = -1.0_dp*my_numer/my_denom
-         CASE (cg_fletcher_reeves, cg_polak_ribiere, cg_fletcher, cg_liu_storey)
+         CASE (cg_fletcher_reeves, cg_polak_ribiere, &
+               cg_fletcher, cg_liu_storey)
             beta = my_numer/my_denom
          CASE (cg_hager_zhang)
             kappa = -2.0_dp*my_numer/my_denom
             tau = -1.0_dp*my_numer2/my_denom
             beta = tau - kappa*my_numer3/my_denom
+         CASE (cg_bfgs_hybrid)
+            beta = MAX(0.0_dp, MIN(-my_numer/my_denom, -my_numer2/my_denom))
+            l_index = 1.0_dp + beta*(my_numer3/my_numer2)
          CASE (cg_zero)
             beta = 0.0_dp
          CASE DEFAULT
@@ -9591,7 +9606,7 @@ CONTAINS
 
          CASE (1)
 
-            WRITE (unit_nr, '(T2,A6,A5,I6,F22.10,ES10.2,T67,ES7.0,F6.1)') &
+            WRITE (unit_nr, '(T2,A6,A5,I6,F22.10,ES14.5,T67,ES7.0,F10.5)') &
                iter_type_str, &
                iter_status, &
                iteration, &
@@ -9602,11 +9617,12 @@ CONTAINS
 
          CASE (2)
 
-            WRITE (unit_nr, '(T2,A6,A5,I6,F22.10,ES10.2,ES10.2,F6.1,ES7.0,F6.1)') &
+            WRITE (unit_nr, '(T2,A6,A5,I6,F22.10,ES14.5,ES10.2,ES10.2,F6.1,ES5.0,F10.5)') &
                iter_type_str, &
                iter_status, &
                iteration, &
                loss, &
+               grad_norm, &
                delta_loss, predicted_reduction, rho, & ! distinct
                radius, &
                time

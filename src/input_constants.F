@@ -936,7 +936,8 @@ MODULE input_constants
                                    cg_fletcher = 4, &
                                    cg_liu_storey = 5, &
                                    cg_dai_yuan = 6, &
-                                   cg_hager_zhang = 7
+                                   cg_hager_zhang = 7, &
+                                   cg_bfgs_hybrid = 8
    INTEGER, PARAMETER, PUBLIC   :: trustr_steihaug = 1, &
                                    trustr_cauchy = 2, &
                                    trustr_dogleg = 3

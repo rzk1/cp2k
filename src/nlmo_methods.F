@@ -16,20 +16,38 @@ MODULE nlmo_methods
                                               lbfgs_seed
    USE almo_scf_methods,                ONLY: fill_matrix_with_ones
    USE almo_scf_qs,                     ONLY: matrix_qs_to_almo
-   USE almo_scf_types,                  ONLY: optimizer_options_type
+   USE almo_scf_optimizer,              ONLY: compute_cg_beta
+   USE almo_scf_types,                  ONLY: optimizer_options_type, &
+                                              almo_scf_env_type
    USE cell_types,                      ONLY: cell_type
-   USE cp_log_handling,                 ONLY: cp_to_string
+   USE cp_blacs_env,                    ONLY: cp_blacs_env_type
+   USE cp_dbcsr_cholesky,               ONLY: cp_dbcsr_cholesky_decompose,&
+                                              cp_dbcsr_cholesky_invert,&
+                                              cp_dbcsr_cholesky_restore
+   USE cp_log_handling,                 ONLY: cp_get_default_logger,&
+                                              cp_logger_get_default_unit_nr,&
+                                              cp_logger_type,&
+                                              cp_to_string
+   USE cp_para_types,                   ONLY: cp_para_env_type
+   USE cp_dbcsr_operations,             ONLY: dbcsr_allocate_matrix_set,&
+                                              dbcsr_deallocate_matrix_set
    USE dbcsr_api,                       ONLY: &
-        dbcsr_add, dbcsr_add_on_diag, dbcsr_copy, dbcsr_create, dbcsr_dot, dbcsr_get_diag, &
-        dbcsr_get_info, dbcsr_hadamard_product, dbcsr_multiply, dbcsr_p_type, dbcsr_release, &
-        dbcsr_scale, dbcsr_set, dbcsr_set_diag, dbcsr_type, dbcsr_type_no_symmetry
-   USE input_constants,                 ONLY: cg_zero,&
-                                              op_loc_berry,&
-                                              op_loc_pipek,&
-                                              xalmo_prec_dbfgs,&
-                                              xalmo_prec_full,&
-                                              xalmo_prec_identity,&
-                                              xalmo_prec_lbfgs
+        dbcsr_add, dbcsr_add_on_diag, dbcsr_copy, dbcsr_create, dbcsr_desymmetrize, &
+        dbcsr_distribution_get, dbcsr_distribution_type, dbcsr_dot, dbcsr_filter, dbcsr_finalize, &
+        dbcsr_frobenius_norm, dbcsr_func_dtanh, dbcsr_func_inverse, dbcsr_func_tanh, &
+        dbcsr_function_of_elements, dbcsr_get_block_p, dbcsr_get_diag, dbcsr_get_info, &
+        dbcsr_hadamard_product, dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, &
+        dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, &
+        dbcsr_nblkcols_total, dbcsr_nblkrows_total, dbcsr_norm, dbcsr_norm_maxabsnorm, &
+        dbcsr_p_type, dbcsr_print_block_sum, dbcsr_release, dbcsr_reserve_block2d, dbcsr_scale, &
+        dbcsr_set, dbcsr_set_diag, dbcsr_triu, dbcsr_type, dbcsr_type_no_symmetry, &
+        dbcsr_work_create, dbcsr_print
+   USE input_constants,                 ONLY: &
+        almo_scf_diag, almo_scf_dm_sign, cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, &
+        cg_hager_zhang, cg_hestenes_stiefel, cg_liu_storey, cg_polak_ribiere, cg_zero, cg_bfgs_hybrid, &
+        trustr_cauchy, trustr_dogleg, virt_full, xalmo_case_block_diag, xalmo_case_fully_deloc, &
+        xalmo_case_normal, xalmo_prec_domain, xalmo_prec_full, xalmo_prec_identity, op_loc_berry,&
+        op_loc_pipek, xalmo_prec_dbfgs, xalmo_prec_lbfgs
    USE iterate_matrix,                  ONLY: determinant,&
                                               invert_Hotelling
    USE kinds,                           ONLY: dp
@@ -66,7 +84,9 @@ MODULE nlmo_methods
              nlmo_env_minus_hessian_inv_apply, &
              nlmo_env_invert_hessian, &
              nlmo_env_hessian_apply, &
-             nlmo_env_predicted_reduction
+             nlmo_newton_grad_to_step, &
+             nlmo_env_predicted_reduction, &
+             trust_step_subproblem
 
 CONTAINS
 
@@ -127,8 +147,12 @@ CONTAINS
          nlmo_env%weights = 0.0_dp
          CALL initialize_weights(cell, nlmo_env%weights)
 
-         ALLOCATE (op_sm_set_qs(2, dim_op))
-         ALLOCATE (nlmo_env%op_sm_set(2, dim_op))
+         NULLIFY (op_sm_set_qs)
+         CALL dbcsr_allocate_matrix_set(op_sm_set_qs, 2, dim_op)
+         NULLIFY (nlmo_env%op_sm_set)
+         CALL dbcsr_allocate_matrix_set(nlmo_env%op_sm_set, 2, dim_op)
+         !ALLOCATE (op_sm_set_qs(2, dim_op))
+         !ALLOCATE (nlmo_env%op_sm_set(2, dim_op))
 
          ! allocate and initialize all matrices
          DO idim0 = 1, dim_op ! this loop is over miller ind
@@ -138,6 +162,8 @@ CONTAINS
                         nlmo_env%op_sm_set(reim, idim0)%matrix)
 
                ALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
+               CALL dbcsr_create(op_sm_set_qs(reim, idim0)%matrix, &
+                                 template=qs_matrix_s(1)%matrix)
                CALL dbcsr_copy(op_sm_set_qs(reim, idim0)%matrix, &
                                qs_matrix_s(1)%matrix, &
                                name="QS_NLMO_"// &
@@ -146,6 +172,8 @@ CONTAINS
                CALL dbcsr_set(op_sm_set_qs(reim, idim0)%matrix, 0.0_dp)
 
                ALLOCATE (nlmo_env%op_sm_set(reim, idim0)%matrix)
+               CALL dbcsr_create(nlmo_env%op_sm_set(reim, idim0)%matrix, &
+                                 template=m_templateNN)
                CALL dbcsr_copy(nlmo_env%op_sm_set(reim, idim0)%matrix, &
                                m_templateNN, &
                                name="NLMO_"// &
@@ -166,10 +194,11 @@ CONTAINS
                CALL matrix_qs_to_almo(op_sm_set_qs(reim, idim0)%matrix, &
                                       nlmo_env%op_sm_set(reim, idim0)%matrix, &
                                       distr_type_AOs, .FALSE.)
-               DEALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
+               !DEALLOCATE (op_sm_set_qs(reim, idim0)%matrix)
             ENDDO
          ENDDO
-         DEALLOCATE (op_sm_set_qs)
+         !DEALLOCATE (op_sm_set_qs)
+         CALL dbcsr_deallocate_matrix_set(op_sm_set_qs)
 
       CASE (op_loc_pipek)
 
@@ -355,17 +384,19 @@ CONTAINS
                CALL dbcsr_release(nlmo_env%m_B0(reim, idim0, ispin))
             ENDDO
 
-            SELECT CASE (nlmo_env%loc_operator)
-            CASE (op_loc_berry)
-               DEALLOCATE (nlmo_env%op_sm_set(reim, idim0)%matrix)
-            END SELECT
+            !SELECT CASE (nlmo_env%loc_operator)
+            !CASE (op_loc_berry)
+            !   DEALLOCATE (nlmo_env%op_sm_set(reim, idim0)%matrix)
+            !END SELECT
 
          ENDDO
       ENDDO
 
       SELECT CASE (nlmo_env%loc_operator)
       CASE (op_loc_berry)
-         DEALLOCATE (nlmo_env%op_sm_set)
+         !DEALLOCATE (nlmo_env%op_sm_set)
+         CALL dbcsr_deallocate_matrix_set(nlmo_env%op_sm_set)
+
       END SELECT
 
       DEALLOCATE (nlmo_env%m_B0)
@@ -399,8 +430,10 @@ CONTAINS
       ELSE IF (nlmo_env%hessian_type .EQ. xalmo_prec_dbfgs) THEN
          nlmo_env%d_bfgs = .TRUE.
       ENDIF
-      IF (nlmo_env%l_bfgs .AND. (optimizer%conjugator .NE. cg_zero)) THEN
-         CPABORT("Cannot use conjugators with BFGS")
+
+      IF (nlmo_env%l_bfgs .AND. (optimizer%conjugator .NE. cg_zero .AND. &
+          optimizer%conjugator .NE. cg_bfgs_hybrid)) THEN
+         CPABORT("Cannot use conjugators with BFGS other than hybrid")
       ENDIF
 
    END SUBROUTINE nlmo_env_set_flags
@@ -590,7 +623,24 @@ CONTAINS
 
       INTEGER                                            :: ispin, nocc, nspins, para_group
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diagonal
-      TYPE(dbcsr_type)                                   :: tm_OO1
+      REAL(KIND=dp)                                      :: t_invert_Hotelling, &
+                                                            t_dbcsr_multi
+      INTEGER                                            :: unit_nr, handle
+      TYPE(cp_logger_type), POINTER                      :: logger
+      CHARACTER(len=*), PARAMETER :: routineN = 'nlmo_env_mainvar_to_aux', &
+         routineP = moduleN//':'//routineN
+
+      CALL timeset(routineN, handle)
+      ! get a useful output_unit
+      logger => cp_get_default_logger()
+      IF (logger%para_env%mepos == logger%para_env%source) THEN
+         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         unit_nr = -1
+      ENDIF
+
+      t_invert_Hotelling = 0.0_dp
+      t_dbcsr_multi = 0.0_dp
 
       nspins = SIZE(nlmo_env%m_theta)
 
@@ -612,6 +662,7 @@ CONTAINS
                              0.0_dp, &
                              tm_OO1, &
                              filter_eps=nlmo_env%eps_filter)
+
          CALL dbcsr_set(nlmo_env%m_sig_sqrti_ii(ispin), 0.0_dp)
          CALL dbcsr_add_on_diag(nlmo_env%m_sig_sqrti_ii(ispin), 1.0_dp)
          CALL dbcsr_multiply("T", "N", 1.0_dp, &
@@ -673,6 +724,8 @@ CONTAINS
 
       ENDDO ! ispin
 
+      CALL timestop(handle)
+
    END SUBROUTINE nlmo_env_mainvar_to_aux
 
 ! **************************************************************************************************
@@ -699,13 +752,24 @@ CONTAINS
                                                             penal_function_ispin
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: reim_diag, z2
       TYPE(dbcsr_type)                                   :: tempOccOcc1, tempOccOcc2
+      INTEGER                                            :: unit_nr
+      TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
+      ! get a useful output_unit
+      logger => cp_get_default_logger()
+      IF (logger%para_env%mepos == logger%para_env%source) THEN
+         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         unit_nr = -1
+      ENDIF
 
       nspins = SIZE(nlmo_env%m_theta_normalized)
 
       nlmo_env%localization_component = 0.0_dp
       nlmo_env%orthogonalization_component = 0.0_dp
+      penal_function_ispin = 0.0_dp
+      det1 = 0.0_dp
       DO ispin = 1, nspins
 
          CALL dbcsr_get_info(nlmo_env%m_theta_normalized(ispin), &
@@ -743,7 +807,7 @@ CONTAINS
                                    0.0_dp, tempOccOcc2, &
                                    retain_sparsity=.TRUE.)
 
-               reim_diag = 0.0_dp
+               reim_diag(:) = 0.0_dp
                CALL dbcsr_get_diag(tempOccOcc2, reim_diag)
                CALL mp_sum(reim_diag, para_group)
                z2(:) = z2(:) + reim_diag(:)*reim_diag(:)
@@ -812,10 +876,25 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: tg_diagonal, z2
       TYPE(dbcsr_type)                                   :: m_temp_oo_1, m_temp_oo_2, m_temp_oo_3, &
                                                             m_temp_oo_4
+      REAL(KIND=dp)                                      :: t_grad_loc, t_grad_pen, t_grad_norm, &
+                                                            t_dbcsr_multi_loc
+      INTEGER                                            :: unit_nr
+      TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
+      ! get a useful output_unit
+      logger => cp_get_default_logger()
+      IF (logger%para_env%mepos == logger%para_env%source) THEN
+         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         unit_nr = -1
+      ENDIF
 
       nspins = SIZE(nlmo_env%m_theta_normalized)
+      t_grad_loc = 0.0_dp
+      t_grad_pen = 0.0_dp
+      t_grad_norm = 0.0_dp
+      t_dbcsr_multi_loc = 0.0_dp
 
       DO ispin = 1, nspins
 
@@ -835,6 +914,7 @@ CONTAINS
          CALL dbcsr_get_info(nlmo_env%m_siginv(ispin), nfullrows_total=dim0)
          ALLOCATE (tg_diagonal(dim0))
          ALLOCATE (z2(dim0))
+
          CALL dbcsr_set(m_temp_oo_1, 0.0_dp) ! accumulate the gradient wrt a_norm here
 
          ! do d_Omega/d_a_normalized first
@@ -896,7 +976,6 @@ CONTAINS
 
          ENDDO ! end loop over idim0
          DEALLOCATE (z2)
-
          ! add gradient of the penalty functional log[det(sigma)]
          ! G = 2*prefactor*sigma0.a_norm.sigma_inv
          !CALL dbcsr_norm(nlmo_env%m_sigma0_thetanorm_siginv(ispin), &
@@ -1014,7 +1093,6 @@ CONTAINS
 !> \param step ...
 !> \param prev_grad ...
 !> \param prev_m_theta ...
-=======
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
@@ -1157,15 +1235,15 @@ CONTAINS
 !> \param m_in ...
 !> \param m_out ...
 !> \par History
-!>       2020.02 created [Rustam Z Khaliullin]
-!> \author Rustam Z Khaliullin
+!>       2020.02 created [Rustam Z Khaliullin, Ziling Luo]
+!> \author Rustam Z Khaliullin, Ziling Luo
 ! **************************************************************************************************
    SUBROUTINE nlmo_env_hessian_apply(nlmo_env, m_in, m_out)
 
-      TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
+      TYPE(nlmo_env_type), INTENT(IN)                    :: nlmo_env
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_out
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN), &
          OPTIONAL                                        :: m_in
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_out
 
       INTEGER                                            :: dim0, idim0, ispin, nspins, reim
       LOGICAL                                            :: d_bfgs, l_bfgs
@@ -1178,16 +1256,17 @@ CONTAINS
       d_bfgs = nlmo_env%d_bfgs
       l_bfgs = nlmo_env%l_bfgs
 
-      IF (d_bfgs .OR. l_bfgs) THEN
+      IF (d_bfgs) THEN
 
          ! RZK-hessian: unclear what needs to be done here
          ! Do we use BFGS for the PCG/TRUSTR. Within TRUSTR: is it a subproblem solver?
-         CPABORT("This Hessian is NYI for BFGS (sub)problem solver")
+         !CPABORT("This Hessian is NYI for BFGS (sub)problem solver")
 
       ELSE ! non-BFGS
 
-         SELECT CASE (nlmo_env%hessian_type)
-         CASE (xalmo_prec_full)
+         !SELECT CASE (nlmo_env%hessian_type)
+         !CASE (xalmo_prec_full)
+         IF (nlmo_env%hessian_type .EQ. xalmo_prec_full .OR. l_bfgs) THEN
 
             DO ispin = 1, nspins
 
@@ -1248,7 +1327,7 @@ CONTAINS
                                    1.0_dp, tm_oo_1, &
                                    filter_eps=nlmo_env%eps_filter)
 
-               ! Accumulate: (-1)*T.(tr(m_in).T)_diag.N, where T=sigma0.A
+               ! Accumulate: (-2)*T.(tr(m_in).T)_diag.N, where T=sigma0.A
                CALL dbcsr_multiply("T", "N", 1.0_dp, &
                                    m_in(ispin), &
                                    nlmo_env%m_sigma0_thetanorm(ispin), &
@@ -1263,7 +1342,7 @@ CONTAINS
                                    tm_oo_2, &
                                    0.0_dp, tm_oo_3, &
                                    filter_eps=nlmo_env%eps_filter)
-               CALL dbcsr_multiply("N", "N", -1.0_dp, &
+               CALL dbcsr_multiply("N", "N", -2.0_dp, &
                                    tm_oo_3, &
                                    nlmo_env%m_sig_sqrti_ii(ispin), &
                                    1.0_dp, tm_oo_1, &
@@ -1454,14 +1533,16 @@ CONTAINS
 
             ENDDO
 
-         CASE (xalmo_prec_identity)
+         !CASE (xalmo_prec_identity)
+         ELSE IF (nlmo_env%hessian_type .EQ. xalmo_prec_identity) THEN
 
             ! Hessian is set to identity by user
             DO ispin = 1, nspins
                CALL dbcsr_copy(m_out(ispin), m_in(ispin))
             ENDDO ! ispin
 
-         END SELECT
+         !END SELECT
+         ENDIF
 
       ENDIF ! hessian type
 
@@ -1554,38 +1635,70 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief This subroutine is obsolete. Do not call
 !> \param nlmo_env ...
+!> \param almo_scf_env ...
 !> \param grad ...
 !> \param step ...
 !> \param prev_grad ...
 !> \param prev_m_theta ...
 !> \param iteration ...
+!> \param identity_on ...
 !> \par History
 !>       2020.02 created [Rustam Z Khaliullin]
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
-   SUBROUTINE nlmo_env_loss_curvature_grad_to_step(nlmo_env, grad, step, &
+   SUBROUTINE nlmo_env_loss_curvature_grad_to_step(nlmo_env, almo_scf_env, grad, step, &
                                                    prev_grad, prev_m_theta, &
-                                                   iteration)
+                                                   iteration, identity_on)
       !RZK-critical: refactor using other hessian methods
       TYPE(nlmo_env_type), INTENT(INOUT)                 :: nlmo_env
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: grad
+      TYPE(almo_scf_env_type), INTENT(IN)                :: almo_scf_env
       TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: step
-      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: prev_grad, prev_m_theta
-      INTEGER                                            :: iteration
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: grad, prev_grad, &
+                                                            prev_m_theta
+      INTEGER, INTENT(IN)                                :: iteration
+      LOGICAL, INTENT(IN)                                :: identity_on
 
       CHARACTER(len=*), PARAMETER :: routineN = 'nlmo_env_loss_curvature_grad_to_step', &
          routineP = moduleN//':'//routineN
 
-      INTEGER                                            :: ispin, nspins
+      INTEGER                                            :: ispin, nspins, unit_nr
       LOGICAL                                            :: d_bfgs, l_bfgs
-      REAL(KIND=dp)                                      :: bfgs_rho, bfgs_sum
-      TYPE(dbcsr_type)                                   :: bfgs_s, bfgs_y, tempOccOcc1, &
-                                                            tempOccOcc2, tempOccOcc3
+      REAL(KIND=dp)                                      :: bfgs_rho, bfgs_sum, check_norm
+      TYPE(dbcsr_type)                                   :: tempOccOcc1, &
+                                                            tempOccOcc2, &
+                                                            tempOccOcc3, &
+                                                            bfgs_s, &
+                                                            bfgs_y
+      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: m_Hstep
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: check_max_norm
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      ! get a useful output_unit
+      logger => cp_get_default_logger()
+      IF (logger%para_env%ionode) THEN
+         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         unit_nr = -1
+      ENDIF
 
       nspins = SIZE(nlmo_env%m_theta)
 
       d_bfgs = nlmo_env%d_bfgs
       l_bfgs = nlmo_env%l_bfgs
+
+
+      ALLOCATE (m_Hstep(nspins))
+
+      ALLOCATE (check_max_norm(nspins))
+
+      DO ispin = 1, nspins
+
+         ! init matrices
+         CALL dbcsr_create(m_Hstep(ispin), &
+                           template=nlmo_env%m_theta(ispin), &
+                           matrix_type=dbcsr_type_no_symmetry)
+
+      ENDDO !ispin
 
       ! if available use second derivative info - bfgs, hessian, preconditioner
       IF (nlmo_env%hessian_type .EQ. xalmo_prec_identity) THEN ! no second derivatives
@@ -1597,6 +1710,39 @@ CONTAINS
             CALL dbcsr_scale(step(ispin), -1.0_dp)
 
          ENDDO ! ispin
+
+      ELSE IF (nlmo_env%hessian_type .EQ. xalmo_prec_full) THEN
+
+         IF (identity_on) THEN
+
+            DO ispin = 1, nspins
+
+               CALL dbcsr_copy(step(ispin), grad(ispin))
+               CALL dbcsr_scale(step(ispin), -1.0_dp)
+
+            ENDDO ! ispin
+
+         ELSE
+
+            CALL nlmo_newton_grad_to_step(nlmo_env, almo_scf_env, step)
+            ! double check if newton solver actually works
+            ! calculate Norm(H*Step + G)
+            CALL nlmo_env_hessian_apply(nlmo_env, step, m_Hstep)
+            DO ispin = 1, nspins
+
+               CALL dbcsr_add(m_Hstep(ispin), grad(ispin), 1.0_dp, 1.0_dp)
+               CALL dbcsr_norm(m_Hstep(ispin), dbcsr_norm_maxabsnorm, &
+                               norm_scalar=check_max_norm(ispin))
+
+            ENDDO ! ispin
+            check_norm = MAXVAL(check_max_norm)
+            IF (unit_nr > 0) THEN
+               WRITE (unit_nr, '(T6,A55, F15.10)') &
+                 "check if the newton solver correctly predict the step:", &
+                 check_norm
+            ENDIF
+
+         ENDIF
 
       ELSE ! use second derivatives
 
@@ -1723,7 +1869,236 @@ CONTAINS
 
       ENDIF ! second derivative type fork
 
+      DO ispin = 1, nspins
+         CALL dbcsr_release(m_Hstep(ispin))
+      ENDDO ! ispin
+
+      DEALLOCATE (m_Hstep)
+
+
    END SUBROUTINE nlmo_env_loss_curvature_grad_to_step
+
+! *****************************************************************************
+!> \brief computes the step matrix from the gradient and Hessian using
+!>         the Newton-Raphson method
+!> \param nlmo_env ...
+!> \param almo_scf_env ...
+!> \param m_delta ...
+!> \par History
+!>       2020.06 created [Ziling Luo]
+!> \author Ziling Luo
+! **************************************************************************************************
+   SUBROUTINE nlmo_newton_grad_to_step(nlmo_env, almo_scf_env, m_delta)
+
+
+      TYPE(nlmo_env_type), INTENT(IN)                    :: nlmo_env
+      TYPE(almo_scf_env_type), INTENT(IN)                :: almo_scf_env
+      TYPE(dbcsr_type), DIMENSION(:), INTENT(INOUT)      :: m_delta
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'newton_grad_to_step', &
+         routineP = moduleN//':'//routineN
+      CHARACTER(LEN=20)                                  :: iter_type
+      INTEGER                                            :: handle, unit_nr, ispin, iteration, &
+                                                            nspins, outer_iteration
+      LOGICAL                                            :: converged, outer_prepare_to_exit, &
+                                                            prepare_to_exit, reset_conjugator, &
+                                                            use_preconditioner
+      REAL(KIND=dp)                                      :: alpha, beta, denom, denom_ispin, &
+                                                            numer, numer_ispin, residue_norm, &
+                                                            t1, t2, obj_func
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: residue_max_norm
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: m_Hstep, m_step,  &
+                                                            m_residue, m_residue_prev
+
+
+      CALL timeset(routineN, handle)
+
+      ! get a useful output_unit
+      logger => cp_get_default_logger()
+      IF (logger%para_env%ionode) THEN
+         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         unit_nr = -1
+      ENDIF
+
+      nspins = SIZE(nlmo_env%m_theta)
+      reset_conjugator = .TRUE.
+      use_preconditioner = (almo_scf_env%opt_nlmo_newton_pcg%preconditioner .NE. xalmo_prec_identity)
+
+      ! allocate matrices
+      ALLOCATE (m_residue(nspins))
+      ALLOCATE (m_residue_prev(nspins))
+      ALLOCATE (m_step(nspins))
+      ALLOCATE (m_Hstep(nspins))
+
+      ALLOCATE (residue_max_norm(nspins))
+
+      ! initiate objects before iterations
+      DO ispin = 1, nspins
+
+         ! init matrices
+         CALL dbcsr_create(m_residue(ispin), &
+                           template=nlmo_env%m_theta(ispin), &
+                           matrix_type=dbcsr_type_no_symmetry)
+         CALL dbcsr_create(m_residue_prev(ispin), &
+                           template=nlmo_env%m_theta(ispin), &
+                           matrix_type=dbcsr_type_no_symmetry)
+         CALL dbcsr_create(m_step(ispin), &
+                           template=nlmo_env%m_theta(ispin), &
+                           matrix_type=dbcsr_type_no_symmetry)
+         CALL dbcsr_create(m_Hstep(ispin), &
+                           template=nlmo_env%m_theta(ispin), &
+                           matrix_type=dbcsr_type_no_symmetry)
+
+         ! initial guess
+         CALL dbcsr_set(m_delta(ispin), 0.0_dp)
+         ! r_0 = Ax-b = g
+         CALL dbcsr_copy(m_residue(ispin), nlmo_env%grad(ispin))
+         ! p_0 = -r_0 = -g
+         CALL dbcsr_copy(m_step(ispin), nlmo_env%grad(ispin))
+         CALL dbcsr_scale(m_step(ispin), -1.0_dp)
+
+         IF (use_preconditioner) THEN
+
+           CPABORT("Preconditioner is currently not implemented")
+
+         ENDIf ! do not use preconditioner
+
+      ENDDO !ispin
+
+      ! start the outer SCF loop
+      outer_prepare_to_exit = .FALSE.
+      outer_iteration = 0
+      residue_norm = 0.0_dp
+
+      DO
+
+         ! start the inner SCF loop
+         prepare_to_exit = .FALSE.
+         converged = .FALSE.
+         iteration = 0
+         t1 = m_walltime()
+
+         DO
+
+            CALL nlmo_env_hessian_apply(nlmo_env, m_delta, m_Hstep)
+
+            obj_func = 0.0_dp
+            ! Compute current localization function value
+            DO ispin = 1, nspins
+
+               CALL dbcsr_dot(m_delta(ispin), m_Hstep(ispin), numer_ispin)
+               CALL dbcsr_dot(m_delta(ispin), nlmo_env%grad(ispin), denom_ispin)
+
+               obj_func = obj_func + 0.5_dp * numer_ispin + denom_ispin
+
+            ENDDO !ispin
+
+            CALL nlmo_env_hessian_apply(nlmo_env, m_step, m_Hstep)
+
+            ! alpha is computed outside the spin loop
+            numer = 0.0_dp
+            denom = 0.0_dp
+            DO ispin = 1, nspins
+
+               CALL dbcsr_dot(m_residue(ispin), m_residue(ispin), numer_ispin)
+               CALL dbcsr_dot(m_step(ispin), m_Hstep(ispin), denom_ispin)
+
+               numer = numer + numer_ispin
+               denom = denom + denom_ispin
+
+            ENDDO !ispin
+
+            alpha = numer/denom
+
+            DO ispin = 1, nspins
+
+               ! update the variable
+               CALL dbcsr_add(m_delta(ispin), m_step(ispin), 1.0_dp, alpha)
+               CALL dbcsr_copy(m_residue_prev(ispin), m_residue(ispin))
+               CALL dbcsr_add(m_residue(ispin), m_Hstep(ispin), &
+                              1.0_dp, 1.0_dp*alpha)
+               CALL dbcsr_norm(m_residue(ispin), dbcsr_norm_maxabsnorm, &
+                               norm_scalar=residue_max_norm(ispin))
+
+            ENDDO ! ispin
+
+            ! check convergence and other exit criteria
+            residue_norm = MAXVAL(residue_max_norm)
+            converged = (residue_norm .LT. almo_scf_env%opt_nlmo_newton_pcg%eps_error)
+            IF (converged .OR. (iteration .GE. almo_scf_env%opt_nlmo_newton_pcg%max_iter)) THEN
+               prepare_to_exit = .TRUE.
+            ENDIF
+
+            IF (.NOT. prepare_to_exit) THEN
+
+               ! compute the conjugation coefficient - beta
+               CALL compute_cg_beta( &
+                  beta=beta, &
+                  reset_conjugator=reset_conjugator, &
+                  conjugator=cg_fletcher, &
+                  grad=m_residue, &
+                  prev_grad=m_residue_prev, &
+                  step=m_residue, &
+                  prev_step=m_residue_prev)
+
+               DO ispin = 1, nspins
+
+                  ! conjugate the step direction
+                  CALL dbcsr_add(m_step(ispin), m_residue(ispin), beta, -1.0_dp)
+
+               ENDDO !ispin
+
+            ENDIF ! not.prepare_to_exit
+
+            t2 = m_walltime()
+            IF (unit_nr > 0) THEN
+               iter_type = TRIM("NR STEP")
+               WRITE (unit_nr, '(T6,A9,I6,F14.5,F14.5,F15.10,F9.2)') &
+                  iter_type, iteration, &
+                  alpha, obj_func, residue_norm, &
+                  t2 - t1
+            ENDIF
+            t1 = m_walltime()
+
+            iteration = iteration + 1
+            IF (prepare_to_exit) EXIT
+
+         ENDDO ! inner loop
+
+         IF (converged .OR. (outer_iteration .GE. almo_scf_env%opt_nlmo_newton_pcg%max_iter_outer_loop)) THEN
+            outer_prepare_to_exit = .TRUE.
+         ENDIF
+
+         outer_iteration = outer_iteration + 1
+         IF (outer_prepare_to_exit) EXIT
+
+      ENDDO ! outer loop
+
+
+      ! clean up
+      DO ispin = 1, nspins
+         CALL dbcsr_release(m_residue(ispin))
+         CALL dbcsr_release(m_residue_prev(ispin))
+         CALL dbcsr_release(m_step(ispin))
+         CALL dbcsr_release(m_Hstep(ispin))
+      ENDDO !ispin
+      DEALLOCATE (m_residue)
+      DEALLOCATE (m_residue_prev)
+      DEALLOCATE (m_step)
+      DEALLOCATE (residue_max_norm)
+      DEALLOCATE (m_Hstep)
+
+      IF (.NOT. converged) THEN
+         CPABORT("Optimization not converged!")
+      ENDIF
+
+      ! check that the step satisfies H.step=-grad
+
+      CALL timestop(handle)
+
+   END SUBROUTINE nlmo_newton_grad_to_step
 
 ! **************************************************************************************************
 !> \brief ...
@@ -1778,6 +2153,42 @@ CONTAINS
       DEALLOCATE (nlmo_env%m_siginv)
 
    END SUBROUTINE nlmo_env_deallocate_all
+
+! **************************************************************************************************
+!> \brief Loss reduction for a given step is estimated using
+!>        gradient and hessian
+!> \param grad ...
+!> \param curvature ...
+!> \param trust_step ...
+!> \param step_size ...
+!> \param border ...
+!> \par History
+!>       2019.12 created [Rustam Z Khaliullin]
+!> \author Rustam Z Khaliullin
+! **************************************************************************************************
+   SUBROUTINE trust_step_subproblem(grad, curvature, trust_step, step_size, border)
+
+      REAL(KIND=dp), INTENT(IN)                          :: grad, curvature, trust_step
+      REAL(KIND=dp), INTENT(INOUT)                       :: step_size
+      LOGICAL, INTENT(INOUT)                             :: border
+
+      REAL(KIND=dp)                                      :: grad_sign
+
+      IF (curvature .LT. 0.0_dp ) THEN
+         grad_sign = SIGN(1.0_dp, grad) ! sign of grad
+         step_size=-grad_sign*trust_step
+         border = .TRUE.
+      ELSE
+         step_size = -grad/curvature
+         IF (step_size .GT. trust_step) THEN
+            step_size=trust_step
+            border = .TRUE.
+         ELSE
+            border = .FALSE.
+         ENDIF
+      ENDIF
+
+   END SUBROUTINE trust_step_subproblem
 
 ! **************************************************************************************************
 !> \brief Loss reduction for a given step is estimated using

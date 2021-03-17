@@ -107,8 +107,8 @@ CONTAINS
       INTEGER                                            :: handle
       TYPE(section_vals_type), POINTER :: almo_analysis_section, almo_opt_diis_section, &
          almo_opt_pcg_section, almo_scf_section, matrix_iterate_section, nlmo_opt_pcg_section, &
-         nlmo_opt_trustr_section, penalty_section, xalmo_opt_newton_pcg_section, &
-         xalmo_opt_pcg_section, xalmo_opt_trustr_section
+         penalty_section, xalmo_opt_newton_pcg_section, xalmo_opt_pcg_section, &
+         xalmo_opt_trustr_section, nlmo_opt_trustr_section, nlmo_newton_pcg_section
 
       CALL timeset(routineN, handle)
 
@@ -125,12 +125,13 @@ CONTAINS
                                                             "NLMO_OPTIMIZER_TRUSTR")
       nlmo_opt_pcg_section => section_vals_get_subs_vals(almo_scf_section, &
                                                          "NLMO_OPTIMIZER_PCG")
-      almo_analysis_section => section_vals_get_subs_vals(almo_scf_section, "ANALYSIS")
       xalmo_opt_newton_pcg_section => section_vals_get_subs_vals(xalmo_opt_pcg_section, &
                                                                  "XALMO_NEWTON_PCG_SOLVER")
+      almo_analysis_section => section_vals_get_subs_vals(almo_scf_section, "ANALYSIS")
       matrix_iterate_section => section_vals_get_subs_vals(almo_scf_section, &
                                                            "MATRIX_ITERATE")
       penalty_section => section_vals_get_subs_vals(almo_scf_section, "NLMO_PENALTY")
+      nlmo_newton_pcg_section => section_vals_get_subs_vals(almo_scf_section, "NLMO_NEWTON_PCG")
 
       ! read user input
       ! common ALMO options
@@ -164,6 +165,8 @@ CONTAINS
                                 i_val=almo_scf_env%construct_nlmos)
       CALL section_vals_val_get(almo_scf_section, "VIRTUAL_NLMOS", &
                                 l_val=almo_scf_env%virtual_nlmos)
+      CALL section_vals_val_get(almo_scf_section, "OCCUPIED_NLMOS", &
+                                l_val=almo_scf_env%occupied_nlmos)
       CALL section_vals_val_get(almo_scf_section, "NLMO_OPERATOR", &
                                 i_val=almo_scf_env%nlmo_operator_type)
       CALL section_vals_val_get(almo_scf_section, "NLMO_COMPACT_FILTER_START", &
@@ -318,6 +321,22 @@ CONTAINS
                                 "FINAL_DETERMINANT", &
                                 r_val=almo_scf_env%opt_nlmo_penalty%final_determinant)
 
+      CALL section_vals_val_get(nlmo_newton_pcg_section, "EPS_ERROR", &
+                                r_val=almo_scf_env%opt_nlmo_newton_pcg%eps_error)
+      CALL section_vals_val_get(nlmo_newton_pcg_section, "MAX_ITER", &
+                                i_val=almo_scf_env%opt_nlmo_newton_pcg%max_iter)
+      CALL section_vals_val_get(nlmo_newton_pcg_section, "MAX_ITER_OUTER_LOOP", &
+                                i_val=almo_scf_env%opt_nlmo_newton_pcg%max_iter_outer_loop)
+      CALL section_vals_val_get(nlmo_newton_pcg_section, "START_GRADIENT", &
+                                r_val=almo_scf_env%opt_nlmo_newton_pcg%start_grad)
+      CALL section_vals_val_get(nlmo_newton_pcg_section, "PRECONDITIONER", &
+                                i_val=almo_scf_env%opt_nlmo_newton_pcg%preconditioner)
+
+      CALL section_vals_val_get(almo_analysis_section, "_SECTION_PARAMETERS_", &
+                                l_val=almo_scf_env%almo_analysis%do_analysis)
+      CALL section_vals_val_get(almo_analysis_section, "FROZEN_MO_ENERGY_TERM", &
+                                i_val=almo_scf_env%almo_analysis%frozen_mo_energy_term)
+
       CALL section_vals_val_get(xalmo_opt_newton_pcg_section, "EPS_ERROR", &
                                 r_val=almo_scf_env%opt_xalmo_newton_pcg_solver%eps_error)
       CALL section_vals_val_get(xalmo_opt_newton_pcg_section, "MAX_ITER", &
@@ -327,10 +346,6 @@ CONTAINS
       CALL section_vals_val_get(xalmo_opt_newton_pcg_section, "PRECONDITIONER", &
                                 i_val=almo_scf_env%opt_xalmo_newton_pcg_solver%preconditioner)
 
-      CALL section_vals_val_get(almo_analysis_section, "_SECTION_PARAMETERS_", &
-                                l_val=almo_scf_env%almo_analysis%do_analysis)
-      CALL section_vals_val_get(almo_analysis_section, "FROZEN_MO_ENERGY_TERM", &
-                                i_val=almo_scf_env%almo_analysis%frozen_mo_energy_term)
 
       !CALL section_vals_val_get(almo_scf_section,"DOMAIN_LAYOUT_AOS",&
       !                          i_val=almo_scf_env%domain_layout_aos)

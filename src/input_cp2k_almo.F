@@ -19,8 +19,8 @@ MODULE input_cp2k_almo
         almo_deloc_xalmo_1diag, almo_deloc_xalmo_scf, almo_deloc_xalmo_x, almo_frz_crystal, &
         almo_frz_none, almo_scf_diag, almo_scf_pcg, almo_scf_skip, almo_scf_trustr, atomic_guess, &
         cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, cg_hager_zhang, cg_hestenes_stiefel, &
-        cg_liu_storey, cg_polak_ribiere, cg_zero, molecular_guess, op_loc_berry, op_loc_pipek, &
-        optimizer_diis, optimizer_lin_eq_pcg, optimizer_pcg, optimizer_trustr, &
+        cg_liu_storey, cg_polak_ribiere, cg_zero, cg_bfgs_hybrid, molecular_guess, op_loc_berry, &
+        op_loc_pipek, optimizer_diis, optimizer_lin_eq_pcg, optimizer_pcg, optimizer_trustr, &
         spd_inversion_dense_cholesky, spd_inversion_ls_hotelling, spd_inversion_ls_taylor, &
         trustr_cauchy, trustr_dogleg, trustr_steihaug, xalmo_prec_domain, xalmo_prec_full, &
         xalmo_prec_identity, xalmo_prec_lbfgs, xalmo_trial_r0_out, xalmo_trial_simplex
@@ -227,6 +227,13 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="VIRTUAL_NLMOS", &
                           description="In addition to occupied orbitals, localize virtual oribtals", &
                           usage="VIRTUAL_NLMOS .TRUE.", default_l_val=.FALSE., &
+                          lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="OCCUPIED_NLMOS", &
+                          description="Decide if localizing occupied orbitals", &
+                          usage="OCCUPIED_NLMOS .TRUE.", default_l_val=.FALSE., &
                           lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -584,6 +591,11 @@ CONTAINS
       CALL section_release(subsection)
 
       NULLIFY (subsection)
+      CALL create_nlmo_newton_pcg_section(subsection)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+      NULLIFY (subsection)
       CALL create_matrix_iterate_section(subsection)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
@@ -636,6 +648,7 @@ CONTAINS
          CALL section_create(section, __LOCATION__, name="NLMO_OPTIMIZER_PCG", &
                              description="Controls the PCG optimization of nonorthogonal localized MOs.", &
                              n_keywords=9, n_subsections=1, repeats=.FALSE.)
+         NULLIFY (subsection)
          optimizer_type = optimizer_pcg
       CASE (optimizer_xalmo_pcg)
          CALL section_create(section, __LOCATION__, name="XALMO_OPTIMIZER_PCG", &
@@ -654,6 +667,7 @@ CONTAINS
                              "approaches. An iterative conjugate-gradient approach is "// &
                              "used and controled by the inner loop", &
                              n_keywords=10, n_subsections=0, repeats=.FALSE.)
+         NULLIFY (subsection)
          optimizer_type = optimizer_trustr
       CASE (optimizer_xalmo_trustr)
          CALL section_create(section, __LOCATION__, name="XALMO_OPTIMIZER_TRUSTR", &
@@ -780,14 +794,15 @@ CONTAINS
                              usage="CONJUGATOR POLAK_RIBIERE", &
                              default_i_val=cg_hager_zhang, &
                              enum_c_vals=s2a("ZERO", "POLAK_RIBIERE", "FLETCHER_REEVES", &
-                                             "HESTENES_STIEFEL", "FLETCHER", "LIU_STOREY", "DAI_YUAN", "HAGER_ZHANG"), &
+                                             "HESTENES_STIEFEL", "FLETCHER", "LIU_STOREY", "DAI_YUAN", "HAGER_ZHANG", &
+                                             "BFGS_HYBRID"), &
                              enum_desc=s2a("Steepest descent", "Polak and Ribiere", &
                                            "Fletcher and Reeves", "Hestenes and Stiefel", &
                                            "Fletcher (Conjugate descent)", "Liu and Storey", &
-                                           "Dai and Yuan", "Hager and Zhang"), &
+                                           "Dai and Yuan", "Hager and Zhang", "CG-BFGS Hybrid"), &
                              enum_i_vals=(/cg_zero, cg_polak_ribiere, cg_fletcher_reeves, &
                                            cg_hestenes_stiefel, cg_fletcher, cg_liu_storey, &
-                                           cg_dai_yuan, cg_hager_zhang/))
+                                           cg_dai_yuan, cg_hager_zhang, cg_bfgs_hybrid/))
          CALL section_add_keyword(section, keyword)
          CALL keyword_release(keyword)
 
@@ -939,6 +954,73 @@ CONTAINS
       CALL keyword_release(keyword)
 
    END SUBROUTINE create_penalty_section
+
+! **************************************************************************************************
+!> \brief The section controls an iterative solver of the Newton-Raphson linear equation.
+!> \param section ...
+!> \par History
+!>       2020.07 created [Ziling Luo]
+!> \author Ziling Luo
+! **************************************************************************************************
+   SUBROUTINE create_nlmo_newton_pcg_section(section)
+
+      TYPE(section_type), POINTER                        :: section
+
+      TYPE(keyword_type), POINTER                        :: keyword
+
+      CPASSERT(.NOT. ASSOCIATED(section))
+      NULLIFY (section)
+
+      CALL section_create(section, __LOCATION__, name="NLMO_NEWTON_PCG", &
+                          description="Controls an iterative solver of the Newton-Raphson linear equation.", &
+                          n_keywords=5, n_subsections=0, repeats=.FALSE.)
+
+      NULLIFY (keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="MAX_ITER", &
+                          description="Maximum number of iterations", &
+                          usage="MAX_ITER 100", default_i_val=20)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="EPS_ERROR", &
+                          description="Target value of the MAX norm of the error", &
+                          usage="EPS_ERROR 1.E-6", default_r_val=1.0E-5_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="MAX_ITER_OUTER_LOOP", &
+                          description="Maximum number of iterations in the outer loop. "// &
+                          "Use the outer loop to update the preconditioner and reset the conjugator. "// &
+                          "This can speed up convergence significantly.", &
+                          usage="MAX_ITER 10", default_i_val=0)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="START_GRADIENT", &
+                          description="Avoid initial possible negative Hessian stage by"// &
+                          "swiching off the newton solver inside an iteration", &
+                          usage="START_GRADIENT 10.0", default_r_val=0.0_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="PRECONDITIONER", &
+                          description="Select a preconditioner for the conjugate gradient optimization", &
+                          usage="PRECONDITIONER DOMAIN", &
+                          default_i_val=xalmo_prec_domain, &
+                          enum_c_vals=s2a("NONE", "DEFAULT", "DOMAIN", "FULL", "LBFGS"), &
+                          enum_desc=s2a("Do not use preconditioner", &
+                                        "Same as DOMAIN preconditioner", &
+                                        "Invert preconditioner domain-by-domain."// &
+                                        " The main component of the linear scaling algorithm", &
+                                        "Solve linear equations step=-H.grad on the entire space", &
+                                        "Use limited-memory BFGS method"), &
+                          enum_i_vals=(/xalmo_prec_identity, xalmo_prec_domain, &
+                                        xalmo_prec_domain, xalmo_prec_full, xalmo_prec_lbfgs/))
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+   END SUBROUTINE create_nlmo_newton_pcg_section
 
 ! **************************************************************************************************
 !> \brief The section controls electronic structure analysis based on ALMOs

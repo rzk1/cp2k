@@ -29,6 +29,7 @@ MODULE nlmo_types
       INTEGER                                            :: loc_operator, &
                                                             natoms
       REAL(KIND=dp)                                      :: eps_filter
+      REAL(KIND=dp)                                      :: eps_error
 
       ! AO matrices
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: op_sm_set
