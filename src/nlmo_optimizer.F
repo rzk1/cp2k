@@ -403,7 +403,6 @@ CONTAINS
 
 
       nspins = SIZE(matrix_mo_inout)
-      print *, nspins
       CALL nlmo_env_set_flags(nlmo_env=nlmo_env, &
                               optimizer=optimizer)
       CALL nlmo_env_allocate_all(nlmo_env=nlmo_env, &
