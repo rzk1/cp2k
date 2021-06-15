@@ -623,6 +623,7 @@ CONTAINS
 
       INTEGER                                            :: ispin, nocc, nspins, para_group
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diagonal
+      TYPE(dbcsr_type)                                   :: tm_OO1
       REAL(KIND=dp)                                      :: t_invert_Hotelling, &
                                                             t_dbcsr_multi
       INTEGER                                            :: unit_nr, handle
@@ -824,6 +825,10 @@ CONTAINS
                   fval = nlmo_env%weights(idim0) - nlmo_env%weights(idim0)*SQRT(ABS(z2(ielem)))
                END SELECT
                local_function_ispin = local_function_ispin + fval
+               !IF (unit_nr > 0) THEN
+               !   WRITE (unit_nr, '(T2,3A19,I6,I6,F23.10)') &
+               !      "Atom", "No. Occ", "Localization:", idim0, ielem, fval
+               !ENDIF
             ENDDO
 
          ENDDO ! end loop over idim0
@@ -1978,7 +1983,6 @@ CONTAINS
          prepare_to_exit = .FALSE.
          converged = .FALSE.
          iteration = 0
-         t1 = m_walltime()
 
          DO
 
@@ -2052,7 +2056,6 @@ CONTAINS
 
             ENDIF ! not.prepare_to_exit
 
-            t2 = m_walltime()
             IF (unit_nr > 0) THEN
                iter_type = TRIM("NR STEP")
                WRITE (unit_nr, '(T6,A9,I6,F14.5,F14.5,F15.10,F9.2)') &
@@ -2060,7 +2063,6 @@ CONTAINS
                   alpha, obj_func, residue_norm, &
                   t2 - t1
             ENDIF
-            t1 = m_walltime()
 
             iteration = iteration + 1
             IF (prepare_to_exit) EXIT

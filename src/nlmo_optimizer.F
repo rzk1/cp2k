@@ -41,6 +41,7 @@ MODULE nlmo_optimizer
                                               invert_Hotelling,&
                                               matrix_sqrt_Newton_Schulz
    USE kinds,                           ONLY: dp
+   USE nlmo_types,                      ONLY: nlmo_env_type
    USE machine,                         ONLY: m_walltime
    USE nlmo_methods,                    ONLY: &
         nlmo_env_init, nlmo_env_allocate_all, nlmo_env_compute_BK_ij, nlmo_env_compute_sigma0_ij, &
@@ -866,6 +867,7 @@ CONTAINS
 
                ! update theta
                DO ispin = 1, nspins
+                  CALL dbcsr_print(nlmo_env%m_theta(ispin))
                   IF (.NOT. line_search) THEN ! we prepared to perform the first line search
                      ! "previous" refers to the previous CG step, not the previous LS step
                      CALL dbcsr_copy(prev_m_theta(ispin), nlmo_env%m_theta(ispin))
