@@ -1,4 +1,9 @@
-pipek_C6H6.inp                                      90      1e-04           169.9680388838
+pipek_C6H6.inp                                      90      1e-04           172.6818129438
+pipek_C6H6_CG_BFGS.inp                              90      1e-04           172.6859039706
+pipek_C6H6_trustr.inp                               90      1e-04           172.6828872753
 Si-nlmos.inp                                        90      1e-04           118.5296581594
 water_berry.inp                                     90      1e-04           224.3891398828
+water_berry_CG_BFGS.inp                             90      1e-04           224.3891388599
+water_berry_trustr.inp                              90      1e-04           224.3890270442
+water_berry_trustrDL.inp                            90      1e-04           224.3893450367
 #EOF

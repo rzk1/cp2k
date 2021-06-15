@@ -77,9 +77,116 @@ MODULE almo_scf_methods
       almo_scf_ks_to_ks_xx, &
       construct_domain_r_down, &
       xalmo_initial_guess, &
+      copy_virt2occ, &
       fill_matrix_with_ones
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Copy virtual orbitals into occupied orbitals. Skip virtuals that do not fit.
+!> \param m_occ ...
+!> \param m_virt ...
+!> \param first_virtual_of_domain ...
+!> \par History
+!>       2020.10 created [Rustam Z Khaliullin]
+!> \author Rustam Z Khaliullin
+! **************************************************************************************************
+   SUBROUTINE copy_virt2occ(m_occ, m_virt, first_virtual_of_domain)
+
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: m_occ
+      TYPE(dbcsr_type), INTENT(IN)                       :: m_virt
+      INTEGER, OPTIONAL, INTENT(IN)                      :: first_virtual_of_domain
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'copy_virt2occ', &
+         routineP = moduleN//':'//routineN
+
+      INTEGER                                            :: handle, iblock_col, iblock_row, &
+                                                            iblock_row_size, iblock_col_size, &
+                                                            nocc_of_block, nvirt_of_block, &
+                                                            nao_of_block, last_virtual, &
+                                                            my_first_virtual, &
+                                                            nvert_blocks2, &
+                                                            nhori_blocks2, &
+                                                            nvert_blocks1, &
+                                                            nhori_blocks1
+      LOGICAL                                            :: block_needed
+      !REAL(kind=dp), ALLOCATABLE, DIMENSION(:, :)        :: data_copy
+      REAL(kind=dp), DIMENSION(:, :), POINTER            :: data_p, p_new_block
+      TYPE(dbcsr_iterator_type)                          :: iter
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ao_block_sizes, occ_block_sizes
+      INTEGER, DIMENSION(:), POINTER                     :: ao_blk_sizes, occ_blk_sizes
+
+      CALL timeset(routineN, handle)
+
+      my_first_virtual=1
+      IF (PRESENT(first_virtual_of_domain)) my_first_virtual=first_virtual_of_domain
+      CPASSERT(my_first_virtual.GT.0)
+
+      nvert_blocks2 = dbcsr_nblkrows_total(m_occ)
+      nhori_blocks2 = dbcsr_nblkcols_total(m_occ)
+      nvert_blocks1 = dbcsr_nblkrows_total(m_virt)
+      nhori_blocks1 = dbcsr_nblkcols_total(m_virt)
+      CPASSERT(nvert_blocks1.EQ.nvert_blocks2)
+      CPASSERT(nhori_blocks1.EQ.nhori_blocks2)
+
+      CALL dbcsr_get_info(m_occ, row_blk_size=ao_blk_sizes)
+      CALL dbcsr_get_info(m_occ, col_blk_size=occ_blk_sizes)
+      ALLOCATE (occ_block_sizes(nvert_blocks2), ao_block_sizes(nhori_blocks2))
+      occ_block_sizes(:) = occ_blk_sizes(:)
+      ao_block_sizes(:) = ao_blk_sizes(:)
+
+      CALL dbcsr_set(m_occ, 0.0_dp)
+      CALL dbcsr_filter(m_occ,1.0_dp)
+
+      CALL dbcsr_work_create(m_occ, work_mutable=.TRUE.)
+
+      CALL dbcsr_iterator_start(iter, m_virt)
+      DO WHILE (dbcsr_iterator_blocks_left(iter))
+         CALL dbcsr_iterator_next_block(iter, iblock_row, iblock_col, data_p, &
+            row_size=iblock_row_size, col_size=iblock_col_size)
+
+         nocc_of_block = occ_block_sizes(iblock_col)
+         nao_of_block = ao_block_sizes(iblock_row)
+         nvirt_of_block = iblock_col_size
+         CPASSERT(nao_of_block.EQ.iblock_row_size)
+
+         block_needed = .TRUE.
+         IF ( nocc_of_block*nao_of_block*nvirt_of_block .EQ. 0 ) THEN
+            block_needed = .FALSE.
+         ENDIF
+         IF (my_first_virtual.GT.nvirt_of_block) THEN
+            block_needed = .FALSE.
+         ENDIF
+
+         IF (block_needed) THEN
+
+            ! Prepare data
+            !ALLOCATE (data_copy(nao_of_block, nocc_of_block))
+            !data_copy(:, :) = data_p(:, :)
+
+            NULLIFY (p_new_block)
+            CALL dbcsr_reserve_block2d(m_occ, iblock_row, iblock_col, p_new_block)
+            CPASSERT(ASSOCIATED(p_new_block))
+            p_new_block(:, :) = 0.0_dp
+            !p_new_block(:, :) = data_p(:, (nocc_of_block + 1):(nocc_of_block + nvirt_of_block))
+            last_virtual = MIN(nvirt_of_block, my_first_virtual+nocc_of_block-1)
+            p_new_block(:, :) = data_p(:, my_first_virtual:last_virtual)
+
+            !DEALLOCATE (data_copy)
+
+         ENDIF
+
+      ENDDO
+      CALL dbcsr_iterator_stop(iter)
+
+      CALL dbcsr_finalize(m_occ)
+
+      DEALLOCATE (occ_block_sizes)
+      DEALLOCATE (ao_block_sizes)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE copy_virt2occ
 
 ! **************************************************************************************************
 !> \brief Fill all matrix blocks with 1.0_dp

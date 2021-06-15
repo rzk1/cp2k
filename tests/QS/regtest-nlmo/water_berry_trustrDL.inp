@@ -30,11 +30,11 @@
       ALMO_SCF_GUESS             ATOMIC
       XALMO_TRIAL_WF             SIMPLE
 
-      CONSTRUCT_NLMOS            PCG
+      CONSTRUCT_NLMOS            TRUST_REGION
       OCCUPIED_NLMOS             TRUE
-      VIRTUAL_NLMOS              FALSE
+      VIRTUAL_NLMOS              FALSE !TRUE
       NLMO_COMPACT_FILTER_START  1.0E-2
-      NLMO_OPERATOR              PIPEK
+      NLMO_OPERATOR              BERRY
 
       &XALMO_OPTIMIZER_PCG
         MAX_ITER                 50
@@ -46,22 +46,31 @@
         MAX_ITER_OUTER_LOOP      10
       &END XALMO_OPTIMIZER_PCG
 
-      &NLMO_OPTIMIZER_PCG
-        MAX_ITER                 200
-        EPS_ERROR                0.1
-        CONJUGATOR               ZERO
-        PRECONDITIONER           LBFGS
-        LIN_SEARCH_EPS_ERROR     0.5
-        LIN_SEARCH_STEP_SIZE_GUESS 0.001
-        MAX_ITER_OUTER_LOOP      0
-      &END NLMO_OPTIMIZER_PCG
+      &NLMO_OPTIMIZER_TRUSTR
+        ALGORITHM                   Dogleg
+        MAX_ITER_OUTER_LOOP         1000
+        EPS_ERROR                   0.001
+        CONJUGATOR                  FLETCHER
+        PRECONDITIONER              FULL
+        ETA                         0.25
+        INITIAL_TRUST_RADIUS        0.01
+        MAX_TRUST_RADIUS            2.0
+      &END NLMO_OPTIMIZER_TRUSTR
 
       &NLMO_PENALTY
-        PENALTY_STRENGTH                  0.01
-        DETERMINANT_TOLERANCE             1.0E-4
+        PENALTY_STRENGTH                  0.4
+        DETERMINANT_TOLERANCE             1.0E-8
         PENALTY_STRENGTH_DECREASE_FACTOR  2.0
-        FINAL_DETERMINANT                 0.6
+        FINAL_DETERMINANT                 0.9
       &END NLMO_PENALTY
+
+      &NLMO_NEWTON_PCG
+        PRECONDITIONER         NONE
+        MAX_ITER_OUTER_LOOP    1
+        MAX_ITER               2000
+        EPS_ERROR              1.0E-1
+        START_GRADIENT         0.01
+      &END NLMO_NEWTON_PCG
 
     &END ALMO_SCF
 
@@ -70,27 +79,26 @@
       &END XC_FUNCTIONAL
     &END XC
   &END DFT
-
   &SUBSYS
     &CELL
-      ABC 5.430710 5.430710 5.430710
+      ABC 6.0 6.0 6.0
     &END CELL
     &COORD
-      SCALED T
-      Si         0.000000      0.000000      0.000000
-      Si         0.000000      0.500000      0.500000
-      Si         0.500000      0.000000      0.500000
-      Si         0.500000      0.500000      0.000000
-      Si         0.250000      0.250000      0.250000
-      Si         0.250000      0.750000      0.750000
-      Si         0.750000      0.250000      0.750000
-      Si         0.750000      0.750000      0.250000
+    O   0.000000    0.000000   -0.065587 H2O
+    H   0.000000   -0.757136    0.520545 H2O
+    H   0.000000    0.757136    0.520545 H2O
     &END COORD
-    &KIND Si
-      BASIS_SET SZV-GTH
-      POTENTIAL GTH-PBE-q4
+    &KIND H
+      BASIS_SET DZVP-GTH
+      POTENTIAL GTH-BLYP-q1
     &END KIND
+    &KIND O
+      BASIS_SET DZVP-GTH
+      POTENTIAL GTH-BLYP-q6
+    &END KIND
+    &TOPOLOGY
+      CONNECTIVITY GENERATE
+    &END TOPOLOGY
   &END SUBSYS
-
 &END FORCE_EVAL
 

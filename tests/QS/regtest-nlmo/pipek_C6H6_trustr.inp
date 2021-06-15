@@ -28,6 +28,7 @@
       RETURN_ORTHOGONALIZED_MOS  FALSE
 
       CONSTRUCT_NLMOS            TRUST_REGION
+      OCCUPIED_NLMOS             FALSE
       VIRTUAL_NLMOS              TRUE !FALSE
       NLMO_OPERATOR              PIPEK
       !NLMO_COMPACT_FILTER_START  1.0E-3
@@ -56,8 +57,8 @@
         ALGORITHM                   CG
         MAX_ITER                    100
         MAX_ITER_OUTER_LOOP         1000
-        EPS_ERROR                   0.00001
-        MODEL_GRAD_NORM_RATIO       0.1
+        EPS_ERROR                   0.05
+        MODEL_GRAD_NORM_RATIO       0.7
         CONJUGATOR                  FLETCHER
         PRECONDITIONER              FULL
         ETA                         0.25
@@ -69,7 +70,7 @@
         PENALTY_STRENGTH                  0.05
         DETERMINANT_TOLERANCE             1.0E-8
         PENALTY_STRENGTH_DECREASE_FACTOR  3.0
-        FINAL_DETERMINANT                 0.8
+        FINAL_DETERMINANT                 0.9
       &END NLMO_PENALTY
 
     &END ALMO_SCF

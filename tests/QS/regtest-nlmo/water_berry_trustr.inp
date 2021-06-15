@@ -31,6 +31,7 @@
       XALMO_TRIAL_WF             SIMPLE
 
       CONSTRUCT_NLMOS            TRUST_REGION
+      OCCUPIED_NLMOS             TRUE
       VIRTUAL_NLMOS              FALSE !TRUE
       NLMO_COMPACT_FILTER_START  1.0E-2
       NLMO_OPERATOR              BERRY

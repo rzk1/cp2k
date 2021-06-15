@@ -18,7 +18,7 @@ MODULE almo_scf_types
    USE domain_submatrix_types,          ONLY: domain_map_type,&
                                               domain_submatrix_type
    USE input_constants,                 ONLY: &
-        cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, cg_hager_zhang, cg_hestenes_stiefel, &
+        cg_dai_yuan, cg_fletcher, cg_fletcher_reeves, cg_hager_zhang, cg_hestenes_stiefel, cg_bfgs_hybrid, &
         cg_liu_storey, cg_polak_ribiere, cg_zero, optimizer_diis, optimizer_pcg, optimizer_trustr, &
         trustr_cauchy, trustr_dogleg, trustr_steihaug, xalmo_prec_domain, xalmo_prec_full, &
         xalmo_prec_identity
@@ -50,6 +50,16 @@ MODULE almo_scf_types
                             determinant_tolerance, penalty_strength_dec_factor
 
    END TYPE penalty_type
+
+   TYPE nlmo_newton_pcg_type
+
+      REAL(KIND=dp)      :: eps_error, start_grad
+
+      INTEGER            :: preconditioner, & ! preconditioner type
+                            max_iter, &
+                            max_iter_outer_loop
+
+   END TYPE nlmo_newton_pcg_type
 
    ! almo-based electronic structure analysis
    TYPE almo_analysis_type
@@ -212,9 +222,11 @@ MODULE almo_scf_types
       ! NLMO-related
       INTEGER                                        :: construct_nlmos
       LOGICAL                                        :: virtual_nlmos
+      LOGICAL                                        :: occupied_nlmos
       INTEGER                                        :: nlmo_operator_type
       REAL(KIND=dp)                                  :: nlmo_compactification_filter_start
       TYPE(penalty_type)                             :: opt_nlmo_penalty
+      TYPE(nlmo_newton_pcg_type)                     :: opt_nlmo_newton_pcg
       TYPE(optimizer_options_type)                   :: opt_nlmo_trustr
       TYPE(optimizer_options_type)                   :: opt_nlmo_pcg
 
@@ -375,6 +387,8 @@ MODULE almo_scf_types
       TYPE(optimizer_options_type)                   :: opt_xalmo_trustr
       TYPE(optimizer_options_type)                   :: opt_xalmo_newton_pcg_solver
       TYPE(optimizer_options_type)                   :: opt_k_pcg
+      TYPE(optimizer_options_type)                   :: opt_nlmo_pcg_newton_solver
+      TYPE(optimizer_options_type)                   :: opt_nlmo_trustr_newton_solver
 
       ! keywords that control electron delocalization treatment
       ! RZK-warning: many of these varibles should be collected
@@ -497,6 +511,8 @@ CONTAINS
                conj_string = "Dai-Yuan"
             CASE (cg_hager_zhang)
                conj_string = "Hager-Zhang"
+            CASE (cg_bfgs_hybrid)
+               conj_string = "BFGS-Hybrid"
             END SELECT
             WRITE (unit_nr, '(T4,A,T48,A33)') "conjugator:", TRIM(conj_string)
 
